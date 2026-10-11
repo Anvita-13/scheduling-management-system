@@ -73,11 +73,7 @@ which case they use different lab rooms).
 **Alternatives.** Different subjects placed in the same slot are alternatives: a student can hold only one of them. The admin's
 *Slot Chart* and the student's *Slot View* show exactly which subjects share a slot.
 
-**Subject types.** Every student belongs to a **group** (programme + semester, e.g. *CSE semester 3*). For each group:
-
-- a couple of subjects are **mandatory** — every student of the group must take them, so they are registered automatically;
-- the rest are **optional** ("normal") — a student may choose any of them, as long as there is no clash;
-- a few subjects are offered with **several teacher options** (e.g. Calculus with 4 teachers); most have just one teacher.
+**Subject types.** All students can pick from any subject. Most subjects have just **one teacher** (one offering); a few subjects are offered with **several teacher options** (e.g. Calculus with 4 teachers). When a student picks a subject with a single teacher option, they are **auto-queued** immediately. When there are multiple options, they choose which teacher to queue for.
 
 ## 3. The three roles
 
@@ -99,8 +95,8 @@ hidden in the interface.
 - See their own weekly timetable.
 
 ### Students
-- Choose how many **credits** they will take (within the allowed range); mandatory subjects of their group are added automatically.
-- Select optional subjects, then choose a teacher **option** — each option shows its slots and tells you if it **clashes** with something you hold.
+- Choose how many **credits** they will take (within the allowed range).
+- Select subjects from any in the college, then choose a teacher **option** — each option shows its slots and tells you if it **clashes** with something you hold. Single-teacher subjects are **auto-queued** immediately.
 - Use **Slot View** to compare everything by slot.
 - Follow their requests (with their place in line), get **notified**, see their personal timetable.
 
@@ -112,19 +108,23 @@ flowchart TD
     B --> C[Rooms assigned automatically]
     C --> D[Clash report is clean: slots are fixed]
     D --> E[Registration opens]
-    E --> F[Student chooses credits, mandatory subjects appear]
-    F --> G[Student picks optional subjects and teacher options]
-    G --> H{Clash with something held?}
-    H -- yes --> I[Option blocked, student picks another]
-    H -- no --> J[Request joins that class's waiting line]
-    J --> K[Teacher accepts from the front of the line]
-    K --> L{All seats taken?}
-    L -- No --> K
-    L -- Yes --> M[Class closes, others are told it is full]
-    M --> N[Greedy suggests another option]
-    M --> O[Admin sees unmet demand, adds seats]
-    K --> P[Registration closes]
-    P --> Q[Everyone sees their timetable]
+    E --> F[Student chooses credits, selects subjects]
+    F --> G[Student picks teacher options for chosen subjects]
+    G --> H{Single teacher or multiple?}
+    H -- Single --> I[Auto-queued immediately]
+    H -- Multiple --> J[Student chooses teacher, joins queue]
+    I --> K{Clash with something held?}
+    J --> K
+    K -- yes --> L[Option blocked, student picks another]
+    K -- no --> M[Student gets in line for that class]
+    M --> N[Teacher accepts from the front of the line]
+    N --> O{All seats taken?}
+    O -- No --> N
+    O -- Yes --> P[Class closes, others are told it is full]
+    P --> Q[Greedy suggests another option]
+    P --> R[Admin sees unmet demand, adds seats]
+    N --> S[Registration closes]
+    S --> T[Everyone sees their timetable]
 ```
 
 ### Step 1 — Admin sets up subjects and offerings
@@ -141,16 +141,18 @@ automatically from the slots. The **Clash report** confirms nothing is double-bo
 slot — including which subjects share a slot (alternatives). Once students start registering, classes with students become
 **locked** (their slot can no longer be changed), so nobody is silently put into a clash.
 
-### Step 3 — Students choose credits; mandatory subjects appear
-A student chooses a **credit load** within the allowed range (for example 16–27). Their group's mandatory subjects are registered
-automatically and count toward the load. A student cannot register for the same subject twice, and cannot drop a mandatory subject.
+### Step 3 — Students choose credits and subjects
+A student chooses a **credit load** within the allowed range (for example 16–27) and selects subjects up to that credit total.
+They can select any subject the college offers (no restrictions by programme or semester). A student cannot select the same
+subject twice.
 
-### Step 4 — Students choose optional subjects and a teacher option
-The student selects optional subjects (keeping the total within the credit load), then opens a subject to see its **options**:
-each teacher with their slot(s), times, seats and queue length. An option that overlaps in time with something the student
-already holds is **marked and cannot be requested** (the message names the clashing subject). One option is marked **Suggested**
-(see §6.2). The student sends a **join request**; it is stamped with its arrival and **placed at the back of that teacher's
-waiting line**, and the student sees their position ("#3 in the queue").
+### Step 4 — Students choose teacher options (auto-queue for single-faculty)
+For each selected subject, the student sees the **options**:
+- **Single teacher:** the student is **auto-queued immediately** (joined the waiting line automatically).
+- **Multiple teachers:** each with their slot(s), times, seats and queue length. An option that overlaps in time with something the student
+already holds is **marked and cannot be requested** (the message names the clashing subject and the exact times that conflict).
+One option is marked **Suggested** (see §6.2). The student sends a **join request** for their chosen teacher; it is stamped with its
+arrival and **placed at the back of that teacher's waiting line**, and the student sees their position ("#3 in the queue").
 
 ### Step 5 — Teachers accept in order
 The teacher opens the class and sees the line: #1, #2, #3… Only the person at the **front** can be accepted or declined. Accepting
@@ -178,9 +180,10 @@ There is nothing to "generate" at the end — the schedule was fixed in Steps 1�
 
 | Situation | What the system does |
 |---|---|
-| A student requests an offering that **overlaps in time** with one they hold | Refused immediately, naming the clashing subject. The student picks another option (Slot View shows which). |
+| A student requests an offering that **overlaps in time** with one they hold | Refused immediately, showing which subject clashes and the exact times (theory or lab session, day and time). The student picks another option (Slot View shows which). |
 | A student requests an offering that has **no slot yet** | Refused ("not scheduled yet"); students can only request placed offerings. |
 | A student requests a **full** class | Refused with a clear message, recorded in their history, and a suggested non-clashing alternative is shown. If nobody has seats, the admin is alerted. |
+| A student selects a subject with a **single teacher** | They are **auto-queued immediately** (no choice needed) with a position notification. |
 | Admin picks a slot for a teacher who is **busy then** | The teacher is not in the list; if the request is forced through the API it is refused (`FACULTY_CLASH`). |
 | Admin picks a theory slot that **overlaps its own lab** slot | Refused (the pair would clash with itself). |
 | Admin picks a slot with the **wrong credit value** (e.g. a 4-credit slot for a 3-credit subject) | Refused; only matching packages are offered. |
@@ -190,8 +193,9 @@ There is nothing to "generate" at the end — the schedule was fixed in Steps 1�
 | Two students request at the very same moment | The system takes them strictly one at a time for that class, so the order is always clear. |
 | Two actions race for the **last seat** | Only one succeeds. The seat count can never go above capacity — protected by the database itself. |
 | A teacher tries to accept someone **not at the front** | Refused: requests must be handled first-come, first-served. |
-| A teacher **declines** the front student | That student is notified (with a suggestion if possible) and can choose someone else. |
-| A teacher **closes** a class early | Waiting students are rejected and notified; no new requests are accepted. |
+| A teacher **declines** the front student | That student is notified (with a suggestion if possible) and can choose another teacher. |
+| A teacher **closes** a class early | Waiting students are rejected and notified; no new requests are accepted. Faculty can request the admin to **reopen** a closed class. |
+| A teacher **requests reopening** a closed class | Admin sees the request and can approve it (class reopens with expanded capacity or fresh enrollment) or decline it. |
 | A student **cancels** a waiting request | The request is withdrawn and they may choose another teacher. |
 | A student wants **two requests for one subject** | Not allowed — one live request per subject. Cancel first, then choose again. |
 | Registration is **closed** | Students cannot change credits, pick or drop subjects, or send new requests until it is reopened (cancelling a waiting request is still allowed). |
@@ -295,10 +299,9 @@ Nair is discarded because of the clash, Khan because he is full. Among Iyer (3 f
 ### 6.3 Backtracking Graph Coloring — placing every class without a clash
 
 #### Purpose
-To give every class a **slot** so that **nothing clashes**: no teacher is in two overlapping classes, a group's mandatory subjects
-never overlap each other or any other subject of that group, a class's theory never overlaps its own lab, and no more classes
-meet at the same time than there are rooms. Where there is a choice, it also **spreads optional subjects apart** so students can
-combine them.
+To give every class a **slot** so that **nothing clashes**: no teacher is in two overlapping classes, a class's theory never overlaps
+its own lab, and no more classes meet at the same time than there are rooms. Where there is a choice, it also **spreads subjects
+apart** so students have better chances of combining them without clashing.
 
 #### Why this algorithm
 A schedule is a puzzle, and it maps perfectly onto a well-known problem called **graph coloring**:
@@ -315,10 +318,8 @@ report "impossible" when none does.
 
 #### How it works
 
-**Step 1 — Build the clash map from real data.** Two parts get a line ("must not overlap") if they belong to the **same teacher**, are
-the **theory and lab of the same offering**, or belong to subjects that are **mandatory together in a group** (or a mandatory
-subject and any optional subject of that group, since the optional one would otherwise be unpickable). Optional subjects of one group get a
-weaker "prefer not to overlap" line.
+**Step 1 — Build the clash map from real data.** Two parts get a line ("must not overlap") if they belong to the **same teacher** or are
+the **theory and lab of the same offering**. Multiple subjects taught by the same teacher also get lines to prevent teacher clashes.
 
 **Step 2 — Give each part its choices.** A 3-credit theory part may only use 3-credit theory slots; a lab part only lab slots.
 Classes the admin already placed are fixed: they are kept exactly as they are and simply block their slots.
@@ -327,7 +328,7 @@ Classes the admin already placed are fixed: they are kept exactly as they are an
 there is still freedom). For each part try the available slots, best first:
 1. Does the slot **overlap in time** with any already-placed neighbour? → skip it.
 2. Would it use more rooms than exist at that time? → skip it.
-3. Otherwise **place** the part there (preferring the slot that overlaps fewest optional subjects and is least used) and move on.
+3. Otherwise **place** the part there (preferring the least-used slot for better spread) and move on.
 4. If a later part has *no* slot that works, **go back**, undo this placement, and try the next slot.
 
 **Step 4 — Assign rooms and double-check.** Within each time every class gets a room of the right type (lecture hall or lab) and

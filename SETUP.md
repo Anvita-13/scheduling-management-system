@@ -286,7 +286,7 @@ UPDATE class_sections SET enrolled_count = capacity + 1 WHERE id = 1;
 
 ```sql
 TRUNCATE users, students, faculty, subjects, faculty_subjects, class_sections, join_requests,
-         registrations, slots, slot_periods, rooms, curriculum, notifications,
+         registrations, slots, slot_periods, rooms, notifications,
          registration_settings, algorithm_runs
 RESTART IDENTITY CASCADE;
 ```
@@ -323,22 +323,21 @@ docker compose exec -T db pg_restore -U postgres -d scheduling --clean --if-exis
 
 | Table | Purpose |
 |---|---|
-| `users`, `students`, `faculty` | accounts and role profiles (`students.group_code` = programme-semester) |
+| `users`, `students`, `faculty` | accounts and role profiles |
 | `subjects` | a course: `credits` = theory credits, `lab_credits` > 0 means theory + lab |
-| `curriculum` | which subjects belong to a student group and which are mandatory for it |
 | `faculty_subjects`, `class_sections` | an **offering**: one faculty teaching one subject, with seats and **its own** `theory_slot_id`, `lab_slot_id`, `room_id`, `lab_room_id` |
 | `slots`, `slot_periods` | slot packages (`A1+TA1`, `L1+L2`, …) and their weekly meeting periods |
 | `rooms` | lecture halls and labs (type + size) |
 | `join_requests` | every request; rows with `status='PENDING'` ordered by `queue_seq` **are** the FIFO queue |
-| `registrations` | a student's state per subject: `SELECTED` → `REQUESTED` → `ENROLLED` |
+| `registrations` | a student's state per subject: `SELECTED` → `ENROLLED` (auto-queued for single-faculty subjects, or manual request for multi-faculty) |
 | `notifications` | in-app notifications |
 | `registration_settings` | single row: registration open/closed and credit range |
 | `algorithm_runs` | log of slot-assignment / max-flow runs |
 
 Built-in safeguards: `CHECK (enrolled_count <= capacity)`; `UNIQUE (student_id, subject_id)` on registrations (no double
 registration); a partial unique index allowing only one live (pending/accepted) request per student per subject;
-`UNIQUE (class_id, queue_seq)`; `UNIQUE (subject_id, faculty_id)` (a faculty offers a subject once); `UNIQUE (group_code, subject_id)`
-in the curriculum; foreign keys throughout. Slot-overlap and room rules span several rows, so they are enforced by the
+`UNIQUE (class_id, queue_seq)`; `UNIQUE (subject_id, faculty_id)` (a faculty offers a subject once);
+foreign keys throughout. Slot-overlap and room rules span several rows, so they are enforced by the
 application (and checked by the audit queries above).
 
 ### 5.6 Using DBeaver
@@ -409,11 +408,11 @@ A semester modelled on VIT's FFCS structure (everything except faculty names, wh
 |---|---|
 | **Slot chart** | 66 slots. Theory: 14 two-credit (`A1`…`G2`), 14 three-credit (`A1+TA1`…), 8 four-credit (`A1+TA1+TAA1`…) — "1" = morning, "2" = afternoon family. Labs: 30 two-period pairs `L1+L2` … `L59+L60`. Theory and lab slots overlap in time as in the real chart (e.g. `A1` Mon 08:00 overlaps `L1`) |
 | **Courses** | 29 courses with VIT-style codes (BMAT101L Calculus, BCSE202L Data Structures and Algorithms, BCSE302L Database Systems, BECE204L Microprocessors…); 19 are theory+lab (one selectable unit with its own lab slot), 10 theory-only |
-| **Student groups** | `BTECH-FY` (36 students, `stu1`–`stu36`), `CSE-S3` (36, `stu37`–`stu72`), `CSE-S5` (28, `stu73`–`stu100`), `ECE-S3` (22, `stu101`–`stu122`); each has **2 mandatory** courses, the rest optional |
-| **Option courses** | exactly two courses have faculty options: **BMAT101L Calculus** (theory only, 4 faculty) and **BCSE202L Data Structures and Algorithms** (theory+lab, 5 faculty — each with their own lab slot; two of them share lab slot `L1+L2` and so use different lab rooms). Every other course has a single faculty |
+| **Students** | 122 students (`stu1`–`stu122`) in a single pool — all students can pick from all courses up to their chosen credit load |
+| **Option courses** | exactly two courses have faculty options: **BMAT101L Calculus** (theory only, 4 faculty) and **BCSE202L Data Structures and Algorithms** (theory+lab, 5 faculty — each with their own lab slot; two of them share lab slot `L1+L2` and so use different lab rooms). Single-faculty subjects auto-queue the student when selected. Every other course has a single faculty |
 | **Faculty** | 26 faculty with fake names (e.g. `Dr. Rajesh Patel`), e-mail `first.last@college.edu`; each teaches 1–2 courses; the optimiser places everyone without any teacher overlap |
 | **Rooms** | 10 lecture halls (60–120 seats) and 8 labs (60 seats) |
-| **Registration state** | credit range 16–27; students register mandatory subjects automatically; some classes fill (e.g. Calculus faculty 1 & 2), some queues stay pending, `BCSE306L` (AI) and `BCSE307L` (Compiler Design) have unmet demand |
+| **Registration state** | credit range 16–27; students pick subjects freely (single-faculty subjects auto-queue automatically); some classes fill (e.g. Calculus faculty 1 & 2), some queues stay pending, `BCSE306L` (AI) and `BCSE307L` (Compiler Design) have unmet demand |
 
 Useful logins (password `Faculty@123` / `Student@123`):
 
@@ -431,9 +430,9 @@ Useful logins (password `Faculty@123` / `Student@123`):
 - *Admin → Offerings & Slots*: add an offering and pick the theory slot first — teachers who already teach at an overlapping time are not in the Faculty list.
 - *Admin → Scheduling*: **Clear unlocked slots** then **Auto-assign slots**. With the activity data most offerings are locked (students enrolled), so seed with `--no-activity` to re-optimise *everything* (the Calculus/DSA slots are un-placed too, and the optimiser re-places them):
   `docker compose exec backend python -m app.db.seed --reset --no-activity`.
-- *Student (e.g. `stu40`) → Slot View / Subjects*: options that overlap in time with something you hold are marked and cannot be requested.
-- *Admin → Algorithm Insights → Graph Coloring*: a dry run of the optimiser (conflict edges, chosen slots, backtracking).
-- *Admin → Demand*: raise the seats of `BCSE306L` and watch the unmet students be notified.
+- *Student (e.g. `stu40`) → Subjects*: pick a subject with multiple faculty to see the clash detection — if they're all at the same time, you get a "subject clash" message. Picking a single-faculty subject auto-queues you immediately.
+- *Student → Subjects → Clash Report*: see all subjects that clash at the offering level (part-type detail: which theory/lab sessions overlap and when).
+- *Admin → Demand*: raise the seats of `BCSE306L` and watch the unmet students be auto-queued (the sync system marks them as waiting and notifies them).
 
 **Not modelled** (the schema has no place for them): per-faculty availability windows, a per-faculty maximum workload, and
 tutorial/"embedded" component variants beyond one theory slot + one lab slot per offering. Treat these as future extensions.
@@ -536,12 +535,12 @@ before re-running `pytest`.
 |---|---|
 | `test_algo_fifo_greedy.py` | FIFO ordering and edge cases; Greedy selection, ties, configurability |
 | `test_algo_coloring_flow.py` | Conflict-graph building, valid/impossible colourings, backtracking, "unknown, try one more" handling; Edmonds-Karp on known networks |
-| `test_algo_slot_assignment.py` | The slot optimiser: clashes by time overlap, per-vertex domains, pre-placed offerings, room limit per period, soft preferences, infeasible cases, determinism, step budget |
-| `test_slot_scheduling.py` | VIT-style slot chart; busy teachers hidden from the drop-down; faculty clashes refused; theory+lab pairing rules; shared lab slot → different rooms; slot lock; student clash blocking; unscheduled offerings; mandatory subjects; auto-assign rules; slot chart, timetables, clash report |
-| `test_registration_faculty_workflow.py` | Credits, subjects, queueing, acceptance in order, full-class rejection, notifications, admin capacity changes |
+| `test_algo_slot_assignment.py` | The slot optimiser: clashes by time overlap, per-vertex domains, pre-placed offerings, room limit per period, infeasible cases, determinism, step budget |
+| `test_slot_scheduling.py` | VIT-style slot chart; busy teachers hidden from the drop-down; faculty clashes refused; theory+lab pairing rules; shared lab slot → different rooms; slot lock; student clash blocking; subject-level clash detection (part-type detail); unscheduled offerings; auto-assign rules; slot chart, timetables, clash report |
+| `test_registration_faculty_workflow.py` | Credits, subjects (free picking, auto-queue for single-faculty), queueing, acceptance in order, full-class rejection, notifications, admin capacity changes |
 | `test_auth_rbac.py` | Password hashing, login, forged/expired tokens, every role boundary, input validation |
-| `test_integration_workflow.py` | The full slot-first flow over HTTP: slot chart → offerings → eligible faculty → auto-assign → mandatory subjects → FIFO → full class → capacity → timetables |
-| `test_seed_sample.py` | The VIT-style sample dataset: fake faculty names, exactly two option courses, 2 mandatory subjects per group, shared lab slot, no clashes, simulated registration never double-books a student |
+| `test_integration_workflow.py` | The full slot-first flow over HTTP: slot chart → offerings → eligible faculty → auto-assign → FIFO → full class → capacity → timetables |
+| `test_seed_sample.py` | The VIT-style sample dataset: fake faculty names, exactly two option courses, 122-student single pool, shared lab slot, no clashes, simulated registration never double-books a student, auto-queue on single-faculty subject selection |
 | `test_config.py` | A `.env` in the `.env.example` format loads correctly (inline comments, Compose-only keys such as `POSTGRES_*`/`FRONTEND_PORT`, comma-separated `CORS_ORIGINS`, JSON list, single value); the real root `.env.example` is checked too when the file is reachable (it is not inside the backend image, so that one case is skipped in-container); a database connection failure returns a clear 503 |
 | `test_concurrency.py` | Parallel accepts never overbook; unique queue positions; double-submit safety (PostgreSQL only) |
 
@@ -558,13 +557,13 @@ The frontend has no automated tests; verify it manually with the checklist in §
 |---|---|
 | A business rule (capacity, queue, registration, clash checks) | `backend/app/services/*.py` |
 | The slot chart (names, periods, timings) | `slot_service.standard_chart()` (`THEORY_GRID`, `THEORY_START`, `LAB_PERIODS`) |
-| What the optimiser treats as a conflict / preference | `timetable_service.build_problem()` |
+| What the optimiser treats as a conflict | `timetable_service.build_problem()` |
 | How rooms are assigned | `room_service.assign_rooms()` |
 | An algorithm | `backend/app/algorithms/*.py` (pure Python — keep HTTP/DB imports out) |
 | A new endpoint | add a function in `backend/app/routers/<role>.py` that calls a service; use the `require_admin` / `require_faculty` / `require_student` dependency |
 | Request validation | `backend/app/schemas/schemas.py` |
 | The database structure | `backend/app/models/*.py`, then create a migration (§8) |
-| The sample data | `backend/app/db/seed.py` (`COURSES`, `GROUPS`, `DEPARTMENTS`) |
+| The sample data | `backend/app/db/seed.py` (`COURSES`, `STUDENT_COUNT`) |
 | What happens on container start | `backend/docker-entrypoint.sh` |
 | A screen | `frontend/src/pages/<role>/…`; register its route in `frontend/src/App.jsx` and menu in `layouts/DashboardLayout.jsx` |
 | A frontend API call | `frontend/src/api/index.js` (all calls are centralised here) |

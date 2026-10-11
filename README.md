@@ -65,25 +65,26 @@ Open <http://localhost:3000> and sign in with the same sample accounts. The firs
   of one faculty with the lab of another. Two faculty may share a lab slot (they then use different lab rooms).
 - Different subjects in the same slot are **alternatives** (a student can hold only one). The *Slot Chart* (admin) and
   *Slot View* (student) show this directly.
-- Courses are theory-only or theory+lab; per student group (programme + semester) a few are **mandatory**, the rest optional.
-  Only a couple of courses come with several faculty options; most have a single faculty.
+- Courses are theory-only or theory+lab. Students pick freely from all available subjects, up to their chosen credit
+  limit. Only a couple of courses come with several faculty options; most have a single faculty.
 - **Slots are fixed before registration.** The admin can place offerings by hand (busy teachers are simply missing from
-  the faculty drop-down) or let the optimiser place them. Students then can't hold overlapping offerings: such requests are refused.
+  the faculty drop-down) or let the optimiser place them. Students can't hold overlapping offerings: such requests are
+  refused, with a clash warning showing exactly which theory/lab sessions overlap and when.
 
 ## Features
 
 **Scheduling (the main purpose)**
 - Standard VIT-style slot chart (36 theory + 30 lab packages) loadable in one click
-- **Auto-assign slots**: a backtracking optimiser places every unplaced offering — no teacher in overlapping slots, no overlap between a group's mandatory subjects and anything else in that group, theory clear of its own lab, within the room limit — and spreads optional subjects so students can combine them. Hand-placed offerings stay put
+- **Auto-assign slots**: a backtracking optimiser places every unplaced offering — no teacher in overlapping slots, theory clear of its own lab, within the room limit — and spreads subjects so students can combine them. Hand-placed offerings stay put
 - **Eligible-faculty filter** when assigning a teacher: anyone already teaching at an overlapping time is left out (with a "why not listed" note)
 - **Automatic rooms**: only room type and size are entered; which class gets which room is derived (same time ⇒ different rooms, labs ⇒ lab rooms)
-- **Clash report**, **slot chart**, weekly timetable for admin / faculty / student, all derived from the slots
+- **Clash report** with part-level detail (shows exactly which theory/lab session clashes and when), **slot chart**, weekly timetable for admin / faculty / student, all derived from the slots
 
-**Admin / Management** — subjects and offerings, slots and rooms, registration period and credit range, seats and class closing, unmet demand and waitlist, alerts when no faculty is available, *Algorithm Insights*
+**Admin / Management** — subjects and offerings, slots and rooms, registration period and credit range, seats and class closing, unmet demand and waitlist, alerts when no faculty is available, faculty reopen requests with approval/denial, account settings
 
-**Faculty** — own classes with slots and rooms, pending requests in strict arrival order, accept/decline from the front, accepted students, close a class, own timetable
+**Faculty** — own classes with slots and rooms, pending requests in strict arrival order, accept/decline from the front, accepted students, request to reopen a closed class, close a class, account settings, own timetable
 
-**Student** — credit load, subjects (group's mandatory subjects added automatically), faculty options with slots and clash warnings, join requests with queue position, *Slot View*, notifications, own timetable
+**Student** — credit load, pick any subjects within credit limit with auto-queue for single-faculty options, faculty options with detailed clash warnings, join requests with queue position, *Slot View*, notifications, account settings, own timetable
 
 **Platform** — JWT authentication with role-based access enforced in the backend, in-app notifications, race-safe seat allocation (row locking + database constraints)
 
@@ -192,10 +193,12 @@ containers, direct database access, troubleshooting).
 ## Sample Data & Credentials
 
 The sample dataset is loaded automatically the first time the app starts (the seed script, `python -m app.db.seed`). It is a semester modelled on VIT's FFCS structure (see [SETUP.md §6.1](SETUP.md#61-the-vit-style-sample-dataset)):
-29 VIT-style courses (BMAT101L Calculus, BCSE202L Data Structures and Algorithms, …), 4 student groups with 2 mandatory
-courses each, exactly two courses with faculty options (Calculus: 4 faculty, theory only; DSA: 5 faculty, theory+lab with a lab
-slot per faculty), 26 faculty with fake names, 122 students, 66 slots, 18 rooms — the two option courses are placed by hand and the optimiser places the other 27 offerings with zero clashes,
-plus a simulated registration (full classes, pending queues, unmet demand). Faculty names are fake; everything else follows VIT's structure.
+29 VIT-style courses (BMAT101L Calculus, BCSE202L Data Structures and Algorithms, …), 122 students in one pool (all
+can pick from all courses), exactly two courses with faculty options (Calculus: 4 faculty, theory only; DSA: 5 faculty, theory+lab
+with a lab slot per faculty), 26 faculty with fake names, 66 slots, 18 rooms — the two option courses are placed by hand and
+the optimiser places the other 27 offerings with zero clashes, plus a simulated registration (full classes, waiting queues,
+unmet demand). Faculty names are fake; everything else follows VIT's structure. Students freely select subjects up to
+their chosen credit load; single-faculty subjects auto-queue the student when picked.
 
 Demo accounts, public by design — they work on the live demo and in your local Docker copy (do not reuse these passwords
 anywhere real, and set `SEED_ADMIN_PASSWORD` if you host your own copy for other people):
@@ -204,7 +207,7 @@ anywhere real, and set `SEED_ADMIN_PASSWORD` if you host your own copy for other
 |---|---|---|
 | Admin | `admin@college.edu` | `Admin@123` |
 | Faculty | `first.last@college.edu`, e.g. `rajesh.patel@college.edu` (DSA), `harish.mehta@college.edu` (Calculus) | `Faculty@123` |
-| Student | `stu1@college.edu` … `stu122@college.edu` (groups: stu1–36 `BTECH-FY`, 37–72 `CSE-S3`, 73–100 `CSE-S5`, 101–122 `ECE-S3`) | `Student@123` |
+| Student | `stu1@college.edu` … `stu122@college.edu` (single pool) | `Student@123` |
 
 ## API Overview
 
@@ -212,11 +215,11 @@ All routes are prefixed with `/api` and need a `Authorization: Bearer <token>` h
 
 | Area | Key endpoints |
 |---|---|
-| Auth | `POST /auth/login`, `GET /auth/me` |
+| Auth | `POST /auth/login`, `GET /auth/me`, `PATCH /me` (profile), `POST /change-password` |
 | Admin — scheduling | `GET /admin/slots`, `POST /admin/slots/load-standard`, `GET /admin/eligible-faculty`, `POST /admin/offerings`, `PATCH /admin/offerings/{id}/slots`, `GET /admin/slot-chart`, `GET /admin/scheduling/clashes`, `POST /admin/scheduling/auto-assign`, `POST /admin/scheduling/assign-rooms`, `POST /admin/scheduling/clear`, `/admin/rooms` |
-| Admin — other | `/admin/subjects`, `/admin/classes` (+ capacity, close, reopen), `/admin/registration`, `/admin/demand`, `/admin/curriculum`, `/admin/faculty`, `/admin/students`, `/admin/insights/*`, `/admin/algorithm-runs` |
-| Faculty | `/faculty/dashboard`, `/faculty/classes`, `/faculty/classes/{id}`, `POST …/accept-next`, `…/reject-next`, `…/close` |
-| Student | `/student/profile`, `PUT /student/credits`, `/student/subjects`, `/student/subjects/{id}/classes`, `/student/offerings` (slot view), `/student/requests` |
+| Admin — other | `/admin/subjects`, `/admin/classes` (+ capacity, close, reopen), `GET /admin/reopen-requests`, `POST /admin/classes/{id}/decline-reopen`, `/admin/registration`, `/admin/demand`, `/admin/faculty`, `/admin/students` |
+| Faculty | `/faculty/dashboard`, `/faculty/classes`, `/faculty/classes/{id}`, `POST …/accept-next`, `…/reject-next`, `…/close`, `POST …/request-reopen` |
+| Student | `/student/profile`, `PUT /student/credits`, `/student/subjects` (pick subjects freely), `/student/subjects/{id}/classes`, `/student/offerings` (slot view), `/student/requests` |
 | Timetable | `GET /timetable` (role-specific weekly view) |
 | Notifications | `/notifications`, `/notifications/unread-count`, `POST /notifications/{id}/read` |
 
@@ -262,8 +265,8 @@ sample dataset, and the complete admin → student → faculty → timetable flo
 
 - An offering has one theory slot and (for theory+lab courses) one lab slot; per-faculty availability windows and workload caps are not modelled.
 - Slots are fixed *before* registration. An offering that already has students (or waiting requests) is locked and cannot be moved.
-- The optimiser predicts clashes from each group's mandatory/optional subjects, not from individual students' future choices; students' real clashes are prevented at request time instead.
-- When registration is closed no new requests are accepted; the admin reopens it for students who still need a seat.
+- Clash detection is real-time (when a student requests): the optimiser does not predict future clashes, so it spreads all subjects equally; students' actual clashes are prevented at request time instead.
+- When registration is closed no new requests are accepted; the admin reopens it for students who still need a seat, or faculty can request the admin to reopen a specific closed class.
 - No CSV/bulk import yet (subjects, faculty and students are created one at a time or by the seed script), and no self-service sign-up, password reset, refresh tokens or login rate limiting.
 
 ## Roadmap
