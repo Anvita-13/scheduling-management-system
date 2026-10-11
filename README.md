@@ -215,9 +215,9 @@ All routes are prefixed with `/api` and need a `Authorization: Bearer <token>` h
 
 | Area | Key endpoints |
 |---|---|
-| Auth | `POST /auth/login`, `GET /auth/me`, `PATCH /me` (profile), `POST /change-password` |
+| Auth | `POST /auth/login`, `GET /auth/me`, `PATCH /auth/me` (profile), `POST /auth/change-password` |
 | Admin — scheduling | `GET /admin/slots`, `POST /admin/slots/load-standard`, `GET /admin/eligible-faculty`, `POST /admin/offerings`, `PATCH /admin/offerings/{id}/slots`, `GET /admin/slot-chart`, `GET /admin/scheduling/clashes`, `POST /admin/scheduling/auto-assign`, `POST /admin/scheduling/assign-rooms`, `POST /admin/scheduling/clear`, `/admin/rooms` |
-| Admin — other | `/admin/subjects`, `/admin/classes` (+ capacity, close, reopen), `GET /admin/reopen-requests`, `POST /admin/classes/{id}/decline-reopen`, `/admin/registration`, `/admin/demand`, `/admin/faculty`, `/admin/students` |
+| Admin — other | `/admin/subjects`, `/admin/classes` (+ capacity, close, reopen), `POST /admin/classes/{id}/decline-reopen`, `/admin/registration`, `/admin/demand`, `/admin/faculty`, `/admin/students` |
 | Faculty | `/faculty/dashboard`, `/faculty/classes`, `/faculty/classes/{id}`, `POST …/accept-next`, `…/reject-next`, `…/close`, `POST …/request-reopen` |
 | Student | `/student/profile`, `PUT /student/credits`, `/student/subjects` (pick subjects freely), `/student/subjects/{id}/classes`, `/student/offerings` (slot view), `/student/requests` |
 | Timetable | `GET /timetable` (role-specific weekly view) |
