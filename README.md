@@ -15,18 +15,30 @@ students pick credits and subjects, choose a faculty option, and faculty accept 
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14%2B-4169E1?logo=postgresql&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?logo=tailwindcss&logoColor=white)
 
-**Run it with one command** — no Python, Node.js or PostgreSQL installation required, just
-[Docker Desktop](https://www.docker.com/products/docker-desktop/):
+## Try it
+
+**Live demo — nothing to install:** <https://anvita-arun-scheduling-frontend.onrender.com>
+
+Sign in with any of the [sample accounts](#sample-data--credentials) (for example admin `admin@college.edu` /
+`Admin@123`). The demo runs on a free hosting tier, so the **first load after a quiet period can take about a minute**
+while the server wakes up. It is a shared demo: anyone can use these accounts, so the data may be changed by other
+visitors, and it may be reset at any time.
+
+**Run it yourself with one command** — no Python, Node.js or PostgreSQL installation required, just
+[Docker Desktop](https://www.docker.com/products/docker-desktop/) (and Git):
 
 ```bash
-git clone <this repository> && cd scheduling-management-system
+git clone https://github.com/Anvita-13/scheduling-management-system.git
+cd scheduling-management-system
 docker compose up --build
 ```
 
-Open <http://localhost:3000>. That's it — see [Getting Started](#getting-started) for details.
+Open <http://localhost:3000> and sign in with the same sample accounts. The first build takes a few minutes. See
+[Getting Started](#getting-started) for details and [DEPLOY.md](DEPLOY.md) to host your own copy.
 
 ## Table of Contents
 
+- [Try it](#try-it)
 - [Core Idea: Slots](#core-idea-slots)
 - [Features](#features)
 - [Phase 1 Algorithms](#phase-1-algorithms)
@@ -159,7 +171,7 @@ scheduling-management-system/
 else — no Python, Node.js or PostgreSQL install. DBeaver is optional, for browsing the containerised database.
 
 ```bash
-git clone <this repository>
+git clone https://github.com/Anvita-13/scheduling-management-system.git
 cd scheduling-management-system
 cp .env.example .env            # Windows PowerShell: copy .env.example .env — optional, sensible defaults are built in
 docker compose up --build
@@ -179,13 +191,14 @@ containers, direct database access, troubleshooting).
 
 ## Sample Data & Credentials
 
-`python -m app.db.seed` loads a semester modelled on VIT's FFCS structure (see [SETUP.md §6.1](SETUP.md#61-the-vit-style-sample-dataset)):
+The sample dataset is loaded automatically the first time the app starts (the seed script, `python -m app.db.seed`). It is a semester modelled on VIT's FFCS structure (see [SETUP.md §6.1](SETUP.md#61-the-vit-style-sample-dataset)):
 29 VIT-style courses (BMAT101L Calculus, BCSE202L Data Structures and Algorithms, …), 4 student groups with 2 mandatory
 courses each, exactly two courses with faculty options (Calculus: 4 faculty, theory only; DSA: 5 faculty, theory+lab with a lab
 slot per faculty), 26 faculty with fake names, 122 students, 66 slots, 18 rooms — the two option courses are placed by hand and the optimiser places the other 27 offerings with zero clashes,
 plus a simulated registration (full classes, pending queues, unmet demand). Faculty names are fake; everything else follows VIT's structure.
 
-For local demonstration only:
+Demo accounts, public by design — they work on the live demo and in your local Docker copy (do not reuse these passwords
+anywhere real, and set `SEED_ADMIN_PASSWORD` if you host your own copy for other people):
 
 | Role | Email | Password |
 |---|---|---|
@@ -269,4 +282,4 @@ module and Greedy seat expansion. Bulk CSV import is another planned convenience
 
 ## License
 
-No license has been specified yet. Add a `LICENSE` file before publishing or distributing this project.
+Released under the MIT License — see [LICENSE](LICENSE).
