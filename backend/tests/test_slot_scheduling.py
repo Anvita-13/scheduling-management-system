@@ -150,33 +150,31 @@ def test_rooms_are_typed_sized_and_never_double_booked(db):
 
 # ------------------------------ students and clashes ---------------------- #
 def test_student_cannot_hold_two_overlapping_offerings(db):
-    """A student who holds one class cannot request another that overlaps its time."""
-    from app.models import ClassStatus
-    from app.core.errors import ConflictError
-    
-    s_held, s_target = make_subject(db, credits=3), make_subject(db, credits=3)
-    held_slot = make_slot(db, "THEORY", 3, periods=[("Mon", "09:10", "10:00")])
-    clash_slot = make_slot(db, "THEORY", 3, periods=[("Mon", "09:30", "10:20")])  # overlaps held_slot
-    ok_slot = make_slot(db, "THEORY", 3, periods=[("Wed", "09:00", "09:50")])  # does not overlap
-    
-    f1, f2, f3 = make_faculty(db), make_faculty(db), make_faculty(db)
-    c_held = make_class(db, s_held, f1, 5, theory_slot=held_slot)
-    c_clash = make_class(db, s_target, f2, 5, theory_slot=clash_slot)  # clashes with held
-    c_ok = make_class(db, s_target, f3, 5, theory_slot=ok_slot)  # does not clash
-    
+    f1, f2 = make_faculty(db), make_faculty(db)
+    s1, s2 = make_subject(db), make_subject(db)
+    a = make_slot(db, "THEORY", 3, periods=[("Mon", "09:00", "09:50")])
+    b = make_slot(db, "THEORY", 3, periods=[("Mon", "09:30", "10:20")])
+    c1 = make_class(db, s1, f1, 5, theory_slot=a)
+    c2 = make_class(db, s2, f2, 5, theory_slot=b)
     stu = make_student(db)
-    reg.select_subject(db, stu.id, s_held.id)
-    reg.submit_request(db, stu.id, c_held).outcome == "QUEUED"
-    faculty_service.accept_next(db, f1.id, c_held)  # student now holds c_held
-    
-    reg.select_subject(db, stu.id, s_target.id)
-    # cannot request c_clash: it overlaps with held_slot
-    with pytest.raises(ConflictError) as e:
-        reg.submit_request(db, stu.id, c_clash)
-    assert e.value.code == "SLOT_CLASH"
-    # but can request c_ok: no overlap
-    assert reg.submit_request(db, stu.id, c_ok).outcome == "QUEUED"
+    pick(db, stu, s1, c1)
+    with pytest.raises(ConflictError) as e:  # the only faculty for s2 meets at the same time as s1
+        reg.select_subject(db, stu.id, s2.id)
+    assert e.value.code == "SUBJECT_CLASH" and s1.code in e.value.message
+    # a different student is not affected
+    assert pick(db, make_student(db), s2, c2).outcome == "QUEUED"
 
+
+def _scheduling_world(db, n_slots_ok=True):
+    slot_service.load_standard_chart(db)
+    make_rooms(db, lecture=6, lab=4, capacity=100)
+    return db
+
+
+def _overlap_of(db, a_id, b_id):
+    cache = slot_service.slot_intervals(db)
+    a, b = db.get(ClassSection, a_id), db.get(ClassSection, b_id)
+    return intervals_overlap(slot_service.class_intervals(a, cache), slot_service.class_intervals(b, cache))
 
 
 def test_auto_assign_respects_faculty_and_pair_rules(db):
