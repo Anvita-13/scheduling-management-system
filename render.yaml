@@ -43,9 +43,8 @@ services:
   - type: web
     name: anvita-arun-scheduling-frontend
     runtime: static
-    rootDir: frontend
-    buildCommand: npm ci && npm run build
-    staticPublishPath: dist
+    buildCommand: cd frontend && npm ci && npm run build
+    staticPublishPath: frontend/dist
     envVars:
       - key: VITE_API_URL       # you are prompted for this: the backend's public URL + /api, e.g. https://scheduling-backend.onrender.com/api
         sync: false
