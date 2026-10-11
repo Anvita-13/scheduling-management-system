@@ -1,0 +1,70 @@
+# Runs the entire application: PostgreSQL + FastAPI backend + the React frontend (served by nginx).
+#
+#   docker compose up --build
+#
+# Then open http://localhost:3000 (or whatever FRONTEND_PORT you set). See .env.example for every
+# variable this file reads and SETUP.md for the full guide. No local Python/Node/PostgreSQL install needed.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-scheduling}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      # Optional: lets a local tool (e.g. DBeaver, psql) connect straight to the database. Remove this
+      # mapping if you don't need direct database access — the app itself never needs it exposed.
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-scheduling}
+      SECRET_KEY: ${SECRET_KEY:-local-dev-insecure-secret-change-me-0123456789abcdef}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:${FRONTEND_PORT:-3000},http://127.0.0.1:${FRONTEND_PORT:-3000}}
+      DEFAULT_CLASS_CAPACITY: ${DEFAULT_CLASS_CAPACITY:-30}
+      DEFAULT_MIN_CREDITS: ${DEFAULT_MIN_CREDITS:-12}
+      DEFAULT_MAX_CREDITS: ${DEFAULT_MAX_CREDITS:-24}
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-12}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+      SEED_ON_START: ${SEED_ON_START:-true}
+      RESET_ON_START: ${RESET_ON_START:-false}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      # Optional: lets you open http://localhost:8000/docs directly. The frontend reaches the backend
+      # through its own nginx proxy (see frontend/nginx.conf) and does not need this mapping.
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+
+volumes:
+  db_data:   # persists PostgreSQL's data directory across `docker compose down` / restarts
