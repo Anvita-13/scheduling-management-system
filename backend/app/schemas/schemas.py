@@ -27,6 +27,17 @@ class TokenResponse(BaseModel):
     user: UserOut
 
 
+class ProfileUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=120)
+    email: Optional[EmailStr] = None
+    current_password: Optional[str] = Field(default=None, max_length=128, description="needed to change the e-mail")
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
 # ---- admin --------------------------------------------------------------- #
 class SubjectCreate(BaseModel):
     code: str = Field(min_length=2, max_length=20, pattern=r"^[A-Za-z0-9\-_]+$")
@@ -55,7 +66,6 @@ class StudentCreate(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     roll_number: str = Field(min_length=1, max_length=30)
     max_credits: Optional[int] = Field(default=None, ge=1, le=60)
-    group_code: Optional[str] = Field(default=None, max_length=20)
 
 
 class OfferingCreate(BaseModel):

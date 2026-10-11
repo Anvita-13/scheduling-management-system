@@ -8,11 +8,12 @@ What it contains
     2-period lab packages L1+L2 ... L59+L60. Theory and lab slots overlap in time exactly as in the real chart.
   * VIT-style course codes: BMAT101L Calculus, BCSE202L Data Structures and Algorithms, ... The "L" course is the
     theory part; courses with a lab (the "P" part) are ONE selectable unit with their own lab slot per faculty.
-  * 4 student groups (programme + semester). Per group: 2 mandatory courses, the rest optional ("normal") courses.
+  * 122 students; every student picks any subjects they like within a chosen credit load (no groups, no
+    compulsory subjects).
   * Exactly two courses are offered with faculty OPTIONS: BMAT101L (4 faculty, theory only) and BCSE202L (5 faculty,
     theory + lab; each faculty has its own lab slot and two of them share one lab slot). All other courses have
     a single faculty.
-  * Faculty teach 1-3 courses each; the optimiser places everything else without any faculty/group clash.
+  * Faculty teach 1-3 courses each; the automatic scheduler places everything else without any faculty clash.
 
 Run ``alembic upgrade head`` first (or pass --create-tables). Demo passwords are for local use only.
 """
@@ -29,7 +30,7 @@ from app.core.errors import DomainError
 from app.core.security import hash_password
 from app.db.database import Base, SessionLocal, engine
 from app.models import (
-    ClassSection, CurriculumEntry, Faculty, Registration, RegistrationStatus, Role, Room, RoomKind, Slot, Student,
+    ClassSection, Faculty, Registration, RegistrationStatus, Role, Room, RoomKind, Slot, Student,
     Subject, User,
 )
 from app.services import (
@@ -61,51 +62,46 @@ LAST_NAMES = [
 ]
 
 # code, name, teaching dept, theory credits, lab credits, seats per offering (len = number of faculty options),
-# pinned placements per offering [(theory slot, lab slot)] (only for the two option courses), {group: "M"|"O"}
+# pinned placements per offering [(theory slot, lab slot)] (only for the two option courses)
 COURSES: List[Dict] = [
     # ---- first year -----------------------------------------------------------------
     dict(code="BMAT101L", name="Calculus", dept="MAT", t=4, l=0, seats=[12, 12, 10, 10],
-         pins=[("A1+TA1+TAA1", None), ("B1+TB1+TBB1", None), ("D2+TD2+TDD2", None), ("C2+TC2+TCC2", None)],
-         groups={"BTECH-FY": "M"}),
-    dict(code="BENG101L", name="Technical English Communication", dept="HUM", t=2, l=1, seats=[40], groups={"BTECH-FY": "M"}),
-    dict(code="BPHY101L", name="Engineering Physics", dept="PHY", t=3, l=1, seats=[36], groups={"BTECH-FY": "O"}),
-    dict(code="BCHY101L", name="Engineering Chemistry", dept="CHY", t=3, l=1, seats=[36], groups={"BTECH-FY": "O"}),
-    dict(code="BEEE101L", name="Basic Electrical and Electronics Engineering", dept="EEE", t=3, l=1, seats=[36], groups={"BTECH-FY": "O"}),
-    dict(code="BCSE101E", name="Computer Programming: Python", dept="CSE", t=2, l=2, seats=[36], groups={"BTECH-FY": "O"}),
-    dict(code="BHUM101L", name="Ethics and Values", dept="HUM", t=2, l=0, seats=[40], groups={"BTECH-FY": "O"}),
-    dict(code="BFRE101L", name="Foreign Language: French", dept="HUM", t=2, l=0, seats=[30], groups={"BTECH-FY": "O"}),
-    dict(code="BMGT101L", name="Principles of Management", dept="MGT", t=3, l=0, seats=[40],
-         groups={"BTECH-FY": "O", "CSE-S3": "O", "ECE-S3": "O"}),
+         pins=[("A1+TA1+TAA1", None), ("B1+TB1+TBB1", None), ("D2+TD2+TDD2", None), ("C2+TC2+TCC2", None)]),
+    dict(code="BENG101L", name="Technical English Communication", dept="HUM", t=2, l=1, seats=[40]),
+    dict(code="BPHY101L", name="Engineering Physics", dept="PHY", t=3, l=1, seats=[36]),
+    dict(code="BCHY101L", name="Engineering Chemistry", dept="CHY", t=3, l=1, seats=[36]),
+    dict(code="BEEE101L", name="Basic Electrical and Electronics Engineering", dept="EEE", t=3, l=1, seats=[36]),
+    dict(code="BCSE101E", name="Computer Programming: Python", dept="CSE", t=2, l=2, seats=[36]),
+    dict(code="BHUM101L", name="Ethics and Values", dept="HUM", t=2, l=0, seats=[40]),
+    dict(code="BFRE101L", name="Foreign Language: French", dept="HUM", t=2, l=0, seats=[30]),
+    dict(code="BMGT101L", name="Principles of Management", dept="MGT", t=3, l=0, seats=[40]),
     # ---- CSE semester 3 -------------------------------------------------------------
     dict(code="BCSE202L", name="Data Structures and Algorithms", dept="CSE", t=3, l=1, seats=[12, 10, 10, 8, 8],
-         pins=[("C1+TC1", "L1+L2"), ("D1+TD1", "L1+L2"), ("E2+TE2", "L9+L10"), ("F2+TF2", "L33+L34"), ("G1+TG1", "L43+L44")],
-         groups={"CSE-S3": "M"}),
-    dict(code="BMAT202L", name="Probability and Statistics", dept="MAT", t=3, l=1, seats=[60], groups={"CSE-S3": "M", "ECE-S3": "M"}),
-    dict(code="BCSE204L", name="Design and Analysis of Algorithms", dept="CSE", t=3, l=1, seats=[30], groups={"CSE-S3": "O"}),
-    dict(code="BCSE205L", name="Computer Architecture and Organization", dept="CSE", t=3, l=0, seats=[36], groups={"CSE-S3": "O"}),
-    dict(code="BECE102L", name="Digital Systems Design", dept="ECE", t=3, l=1, seats=[30], groups={"CSE-S3": "O", "ECE-S3": "O"}),
-    dict(code="BMAT205L", name="Discrete Mathematics", dept="MAT", t=3, l=0, seats=[40], groups={"CSE-S3": "O"}),
-    dict(code="BCSE203E", name="Web Programming", dept="CSE", t=2, l=1, seats=[30], groups={"CSE-S3": "O"}),
+         pins=[("C1+TC1", "L1+L2"), ("D1+TD1", "L1+L2"), ("E2+TE2", "L9+L10"), ("F2+TF2", "L33+L34"), ("G1+TG1", "L43+L44")]),
+    dict(code="BMAT202L", name="Probability and Statistics", dept="MAT", t=3, l=1, seats=[60]),
+    dict(code="BCSE204L", name="Design and Analysis of Algorithms", dept="CSE", t=3, l=1, seats=[30]),
+    dict(code="BCSE205L", name="Computer Architecture and Organization", dept="CSE", t=3, l=0, seats=[36]),
+    dict(code="BECE102L", name="Digital Systems Design", dept="ECE", t=3, l=1, seats=[30]),
+    dict(code="BMAT205L", name="Discrete Mathematics", dept="MAT", t=3, l=0, seats=[40]),
+    dict(code="BCSE203E", name="Web Programming", dept="CSE", t=2, l=1, seats=[30]),
     # ---- CSE semester 5 -------------------------------------------------------------
-    dict(code="BCSE302L", name="Database Systems", dept="CSE", t=3, l=1, seats=[35], groups={"CSE-S5": "M"}),
-    dict(code="BCSE303L", name="Operating Systems", dept="CSE", t=3, l=1, seats=[35], groups={"CSE-S5": "M"}),
-    dict(code="BCSE304L", name="Theory of Computation", dept="CSE", t=3, l=0, seats=[30], groups={"CSE-S5": "O"}),
-    dict(code="BCSE301L", name="Software Engineering", dept="CSE", t=3, l=1, seats=[30], groups={"CSE-S5": "O"}),
-    dict(code="BCSE308L", name="Computer Networks", dept="CSE", t=3, l=1, seats=[30], groups={"CSE-S5": "O"}),
-    dict(code="BCSE306L", name="Artificial Intelligence", dept="CSE", t=3, l=1, seats=[8], groups={"CSE-S5": "O"}),
-    dict(code="BCSE307L", name="Compiler Design", dept="CSE", t=3, l=1, seats=[6], groups={"CSE-S5": "O"}),
-    dict(code="BCSE309L", name="Cryptography and Network Security", dept="CSE", t=3, l=1, seats=[12], groups={"CSE-S5": "O"}),
-    dict(code="BCSE305L", name="Embedded Systems", dept="CSE", t=3, l=0, seats=[30], groups={"CSE-S5": "O"}),
+    dict(code="BCSE302L", name="Database Systems", dept="CSE", t=3, l=1, seats=[35]),
+    dict(code="BCSE303L", name="Operating Systems", dept="CSE", t=3, l=1, seats=[35]),
+    dict(code="BCSE304L", name="Theory of Computation", dept="CSE", t=3, l=0, seats=[30]),
+    dict(code="BCSE301L", name="Software Engineering", dept="CSE", t=3, l=1, seats=[30]),
+    dict(code="BCSE308L", name="Computer Networks", dept="CSE", t=3, l=1, seats=[30]),
+    dict(code="BCSE306L", name="Artificial Intelligence", dept="CSE", t=3, l=1, seats=[8]),
+    dict(code="BCSE307L", name="Compiler Design", dept="CSE", t=3, l=1, seats=[6]),
+    dict(code="BCSE309L", name="Cryptography and Network Security", dept="CSE", t=3, l=1, seats=[12]),
+    dict(code="BCSE305L", name="Embedded Systems", dept="CSE", t=3, l=0, seats=[30]),
     # ---- ECE semester 3 -------------------------------------------------------------
-    dict(code="BECE204L", name="Microprocessors and Microcontrollers", dept="ECE", t=3, l=1, seats=[30], groups={"ECE-S3": "M"}),
-    dict(code="BECE203L", name="Signals and Systems", dept="ECE", t=3, l=0, seats=[30], groups={"ECE-S3": "O"}),
-    dict(code="BECE205L", name="Electromagnetic Fields and Waves", dept="ECE", t=3, l=0, seats=[30], groups={"ECE-S3": "O"}),
-    dict(code="BECE201L", name="Analog Electronic Circuits", dept="ECE", t=3, l=1, seats=[30], groups={"ECE-S3": "O"}),
+    dict(code="BECE204L", name="Microprocessors and Microcontrollers", dept="ECE", t=3, l=1, seats=[30]),
+    dict(code="BECE203L", name="Signals and Systems", dept="ECE", t=3, l=0, seats=[30]),
+    dict(code="BECE205L", name="Electromagnetic Fields and Waves", dept="ECE", t=3, l=0, seats=[30]),
+    dict(code="BECE201L", name="Analog Electronic Circuits", dept="ECE", t=3, l=1, seats=[30]),
 ]
 
-GROUPS = [  # code, number of students, registration-number prefix
-    ("BTECH-FY", 36, "25BCE"), ("CSE-S3", 36, "24BCE"), ("CSE-S5", 28, "23BCE"), ("ECE-S3", 22, "24BEC"),
-]
+STUDENT_COUNT, ROLL_PREFIX = 122, "25BCE"
 POPULARITY = {"BCSE306L": 3.0, "BCSE307L": 2.0, "BCSE309L": 2.0, "BCSE308L": 1.5, "BHUM101L": 0.7}
 
 
@@ -140,25 +136,16 @@ def build_structure(db: Session, rng: random.Random) -> None:
             pools[dept].append(u.id)
             n += 1
 
-    seq = 0
-    for code, size, prefix in GROUPS:
-        for k in range(1, size + 1):
-            seq += 1
-            u = User(name=f"stu{seq}", email=f"stu{seq}@college.edu", password_hash=stu_hash, role=Role.STUDENT)
-            u.student = Student(
-                roll_number=f"{prefix}{k:04d}", max_credits=rng.choice([MAX_CREDITS] * 9 + [24]), group_code=code
-            )
-            db.add(u)
+    for seq in range(1, STUDENT_COUNT + 1):
+        u = User(name=f"stu{seq}", email=f"stu{seq}@college.edu", password_hash=stu_hash, role=Role.STUDENT)
+        u.student = Student(roll_number=f"{ROLL_PREFIX}{seq:04d}", max_credits=rng.choice([MAX_CREDITS] * 9 + [24]))
+        db.add(u)
 
     subjects: Dict[str, Subject] = {}
     for c in COURSES:
         subjects[c["code"]] = Subject(code=c["code"], name=c["name"], credits=c["t"], lab_credits=c["l"])
     db.add_all(subjects.values())
     db.flush()
-    for c in COURSES:
-        for group, role in c["groups"].items():
-            db.add(CurriculumEntry(group_code=group, subject_id=subjects[c["code"]].id, is_mandatory=(role == "M")))
-
     slot_service.load_standard_chart(db)
     for i, cap in enumerate([120, 120, 90, 90, 60, 60, 60, 60, 60, 60], start=1):
         db.add(Room(name=f"LH-{100 + i}", kind=RoomKind.LECTURE, capacity=cap))
@@ -182,12 +169,11 @@ def build_structure(db: Session, rng: random.Random) -> None:
                 theory, lab = slot_ids[t_name], (slot_ids[l_name] if l_name else None)
             admin_service.create_offering(db, subjects[c["code"]].id, fid, c["seats"][i], theory, lab)
 
-    report = timetable_service.auto_assign(db, admin.id)  # the optimisation places every remaining offering
+    report = timetable_service.auto_assign(db, admin.id)  # the automatic scheduler places every remaining offering
     if report["status"] != "OK":  # pragma: no cover - would indicate a data/algorithm regression
-        raise SystemExit(f"Slot optimisation failed: {report['message']}")
+        raise SystemExit(f"Automatic scheduling failed: {report['message']}")
     print(
-        f"  slots placed: {report['to_place']} offerings (backtracks {report['backtracks']}, "
-        f"optional-subject overlaps {report['soft_overlaps']})"
+        f"  slots placed: {report['to_place']} offerings (backtracks {report['backtracks']})"
     )
 
 
@@ -231,37 +217,24 @@ def simulate_registration(db: Session, rng: random.Random) -> None:
     students = list(db.scalars(select(Student).order_by(Student.user_id)))
     plans: Dict[int, List[Subject]] = {}
     for st in students:
-        cur = registration_service.group_curriculum(db, st.group_code)
-        mand = [s for s in subj.values() if cur.get(s.id) is True]
-        opt = [s for s in subj.values() if cur.get(s.id) is False]
-        rng.shuffle(opt)
-        need = sum(s.total_credits for s in mand)
-        target = max(MIN_CREDITS, min(st.max_credits, need + rng.choice([4, 6, 8, 9, 10])))
+        target = max(MIN_CREDITS, min(st.max_credits, rng.choice([16, 18, 20, 21, 22, 24, 27])))
         registration_service.set_credits(db, st.user_id, target)
-        chosen, used = list(mand), need
-        weighted = sorted(opt, key=lambda s: -POPULARITY.get(s.code, 1.0) * rng.random())
-        for s in weighted:
-            if used + s.total_credits <= target:
-                chosen.append(s)
-                used += s.total_credits
+        # popular subjects are picked more often; subjects that cannot be combined (same time) are skipped
+        wanted = sorted(subj.values(), key=lambda s: -POPULARITY.get(s.code, 1.0) * rng.random())
+        chosen: List[Subject] = []
+        for s in wanted:
+            if registration_service.committed_credits(db, st.user_id) + s.total_credits > target:
+                continue
+            try:
+                out = registration_service.select_subject(db, st.user_id, s.id)
+            except DomainError:
+                db.rollback()
+                continue
+            chosen.append(s)
+            # a subject with several faculty still needs a choice; a single-faculty subject was requested automatically
+            if out["status"] == "SELECTED" and len(offerings[s.id]) > 1:
+                _try_request(db, st.user_id, _offering_order(rng, offerings[s.id], weights))
         plans[st.user_id] = chosen
-
-    # round 1: everybody requests their choices (mandatory first)
-    for st in students:
-        for s in plans[st.user_id]:
-            cur_m = registration_service.group_curriculum(db, st.group_code).get(s.id)
-            if cur_m is None or cur_m is False:  # optional: pick it now (mandatory ones are already registered)
-                try:
-                    registration_service.select_subject(db, st.user_id, s.id)
-                except DomainError:
-                    db.rollback()
-                    continue
-            if not _try_request(db, st.user_id, _offering_order(rng, offerings[s.id], weights)):
-                if not cur_m:  # an optional subject nobody could give: drop it instead of waiting
-                    try:
-                        registration_service.deselect_subject(db, st.user_id, s.id)
-                    except DomainError:
-                        db.rollback()
 
     # faculty process their queues in order; a few "lazy" classes leave their queue pending for the demo
     lazy = {c.id for cs in offerings.values() for c in cs if c.id % 7 == 0}
@@ -321,7 +294,7 @@ def main() -> None:
     else:
         print(f"  Admin    : {ADMIN_EMAIL} / (the value of SEED_ADMIN_PASSWORD)")
     print(f"  Faculty  : see Admin > People (e-mail = first.last@college.edu) / {FACULTY_PASSWORD}")
-    print(f"  Students : stu1@college.edu ... / {STUDENT_PASSWORD}   (group is in the roll number / Admin > People)")
+    print(f"  Students : stu1@college.edu ... / {STUDENT_PASSWORD}")
 
 
 if __name__ == "__main__":

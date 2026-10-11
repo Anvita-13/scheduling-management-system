@@ -32,6 +32,13 @@ def _class_summary(db: Session, cls: ClassSection) -> Dict[str, Any]:
             JoinRequest.class_id == cls.id, JoinRequest.status == RequestStatus.PENDING
         )
     )
+    # Students who picked this subject but hold no seat and are in nobody's queue (they have not chosen a faculty yet,
+    # or the only class was full/closed when they picked it). Shown so the faculty's numbers match the admin's.
+    unqueued = db.scalar(
+        select(func.count(Registration.id)).where(
+            Registration.subject_id == cls.subject_id, Registration.status == RegistrationStatus.SELECTED
+        )
+    )
     return {
         "id": cls.id,
         "subject_id": cls.subject_id,
@@ -50,6 +57,8 @@ def _class_summary(db: Session, cls: ClassSection) -> Dict[str, Any]:
         "remaining": cls.remaining,
         "status": cls.status.value,
         "pending_requests": pending or 0,
+        "students_not_in_a_queue": unqueued or 0,
+        "reopen_requested": cls.reopen_requested_at is not None,
     }
 
 
@@ -184,3 +193,9 @@ def reject_next(
 def close_class(db: Session, faculty_id: int, class_id: int) -> ClassSection:
     owned_class(db, faculty_id, class_id)
     return capacity_service.close_class(db, class_id, by_faculty_id=faculty_id)
+
+
+def request_reopen(db: Session, faculty_id: int, class_id: int) -> ClassSection:
+    """Ask the administration to reopen a class this faculty member closed."""
+    owned_class(db, faculty_id, class_id)
+    return capacity_service.request_reopen(db, class_id)

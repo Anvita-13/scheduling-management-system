@@ -28,9 +28,9 @@ def make_faculty(db, name=None):
     return admin_service.create_faculty(db, name or f"Prof {n}", f"fac{n}@t.edu", PASSWORD, f"E{n}", "CS")
 
 
-def make_student(db, credits=12, name=None, max_credits=24, group_code=None):
+def make_student(db, credits=12, name=None, max_credits=24):
     n = next(_seq)
-    u = admin_service.create_student(db, name or f"Student {n}", f"stu{n}@t.edu", PASSWORD, f"R{n}", max_credits, group_code)
+    u = admin_service.create_student(db, name or f"Student {n}", f"stu{n}@t.edu", PASSWORD, f"R{n}", max_credits)
     if credits:
         registration_service.set_credits(db, u.id, credits)
     return u
@@ -84,9 +84,25 @@ def headers(user):
 
 
 def pick(db, student, subject, class_id):
-    """Select a subject (if needed) and request a class."""
+    """Select a subject (if needed) and request a class.
+
+    A subject with a single faculty is requested automatically when it is selected, so in that case the request
+    that already exists is returned instead of sending a second one.
+    """
+    from sqlalchemy import select
+
+    from app.core.errors import DomainError
+    from app.models import JoinRequest, RequestStatus
+
     try:
         registration_service.select_subject(db, student.id, subject.id)
-    except Exception:  # already selected
+    except DomainError:  # already selected
         db.rollback()
+    req = db.scalar(
+        select(JoinRequest).where(
+            JoinRequest.student_id == student.id, JoinRequest.class_id == class_id, JoinRequest.status == RequestStatus.PENDING
+        )
+    )
+    if req is not None:
+        return registration_service.SubmitOutcome("QUEUED", req, "", registration_service.queue_position(db, req))
     return registration_service.submit_request(db, student.id, class_id)

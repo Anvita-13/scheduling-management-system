@@ -64,3 +64,10 @@ def reject_next(
 def close_class(class_id: int, user: User = Depends(require_faculty), db: Session = Depends(get_db)):
     cls = svc.close_class(db, user.id, class_id)
     return {"id": cls.id, "status": cls.status.value}
+
+
+@router.post("/classes/{class_id}/request-reopen")
+def request_reopen(class_id: int, user: User = Depends(require_faculty), db: Session = Depends(get_db)):
+    """Ask the administration to reopen a closed class."""
+    cls = svc.request_reopen(db, user.id, class_id)
+    return {"id": cls.id, "status": cls.status.value, "reopen_requested": True}

@@ -99,6 +99,8 @@ class ClassSection(Base):
     lab_slot_id: Mapped[Optional[int]] = mapped_column(ForeignKey("slots.id", ondelete="SET NULL"), nullable=True)
     room_id: Mapped[Optional[int]] = mapped_column(ForeignKey("rooms.id", ondelete="SET NULL"), nullable=True)
     lab_room_id: Mapped[Optional[int]] = mapped_column(ForeignKey("rooms.id", ondelete="SET NULL"), nullable=True)
+    # Set when the faculty member asks the administration to reopen a closed class; cleared on reopen/decline.
+    reopen_requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -1,7 +1,7 @@
 from datetime import time
 from typing import Optional
 
-from sqlalchemy import Boolean, CheckConstraint, Enum, ForeignKey, Index, Integer, String, Time, UniqueConstraint
+from sqlalchemy import CheckConstraint, Enum, ForeignKey, Index, Integer, String, Time, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -54,15 +54,3 @@ class Room(Base):
     name: Mapped[str] = mapped_column(String(50), unique=True)
     kind: Mapped[RoomKind] = mapped_column(Enum(RoomKind, native_enum=False, length=10), default=RoomKind.LECTURE)
     capacity: Mapped[int] = mapped_column(Integer, default=60)
-
-
-class CurriculumEntry(Base):
-    """Which subjects belong to a student group (programme + semester), and which are mandatory for it."""
-
-    __tablename__ = "curriculum"
-    __table_args__ = (UniqueConstraint("group_code", "subject_id", name="uq_curriculum_group_subject"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    group_code: Mapped[str] = mapped_column(String(20), index=True)
-    subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id", ondelete="CASCADE"))
-    is_mandatory: Mapped[bool] = mapped_column(Boolean, default=False)

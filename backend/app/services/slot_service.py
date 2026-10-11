@@ -4,6 +4,7 @@ A *slot* is a weekly package of periods (``A1+TA1`` = Mon 08:00, Wed 09:00, Fri 
 of their periods overlap in time. An offering (ClassSection) owns a theory slot and - for theory+lab courses -
 its own lab slot, and everything that checks "is this free?" goes through the helpers here.
 """
+from dataclasses import dataclass
 from datetime import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -68,6 +69,63 @@ def period_text(slot: Optional[Slot]) -> str:
 def describe_period(iv: Interval) -> str:
     d, s, e = iv
     return f"{DAY_ORDER[d]} {s // 60:02d}:{s % 60:02d}-{e // 60:02d}:{e % 60:02d}"
+
+
+# --------------------------------------------------------------------------- #
+# Saying *which* parts clash (theory/theory, theory/lab or lab/lab) and when
+# --------------------------------------------------------------------------- #
+@dataclass
+class PartClash:
+    a_kind: str  # "theory" | "lab"
+    a_slot: str
+    b_kind: str
+    b_slot: str
+    when: str    # e.g. "Mon 14:00-14:50"
+
+    @property
+    def title(self) -> str:
+        if self.a_kind == self.b_kind:
+            return f"{self.a_kind.capitalize()}/{self.b_kind} clash"
+        return "Theory/lab clash"
+
+    def sentence(self, a_name: str, b_name: str) -> str:
+        """e.g. 'Theory/lab clash on Mon 14:00-14:50: BCSE202L's lab slot L31+L32 overlaps BMAT101L's theory slot D1.'"""
+        return (
+            f"{self.title} on {self.when}: {a_name}'s {self.a_kind} slot {self.a_slot} "
+            f"overlaps {b_name}'s {self.b_kind} slot {self.b_slot}."
+        )
+
+
+Part = Tuple[str, Slot]  # ("theory" | "lab", the slot)
+
+
+def class_parts(cls: ClassSection) -> List[Part]:
+    parts: List[Part] = []
+    if cls.theory_slot is not None:
+        parts.append(("theory", cls.theory_slot))
+    if cls.lab_slot is not None:
+        parts.append(("lab", cls.lab_slot))
+    return parts
+
+
+def overlap_window(a: Iterable[Interval], b: Iterable[Interval]) -> Optional[str]:
+    for d1, s1, e1 in a:
+        for d2, s2, e2 in b:
+            if d1 == d2 and s1 < e2 and s2 < e1:
+                lo, hi = max(s1, s2), min(e1, e2)
+                return f"{DAY_ORDER[d1]} {lo // 60:02d}:{lo % 60:02d}-{hi // 60:02d}:{hi % 60:02d}"
+    return None
+
+
+def part_clashes(parts_a: Sequence[Part], parts_b: Sequence[Part], cache: "IntervalCache") -> List[PartClash]:
+    """Every pair of parts (a theory or lab slot of each side) that overlaps in time."""
+    out: List[PartClash] = []
+    for a_kind, a_slot in parts_a:
+        for b_kind, b_slot in parts_b:
+            when = overlap_window(cache.get(a_slot.id, []), cache.get(b_slot.id, []))
+            if when:
+                out.append(PartClash(a_kind, a_slot.name, b_kind, b_slot.name, when))
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -225,22 +283,29 @@ def check_placement(
     db: Session, subject: Subject, faculty_id: int, theory_slot_id: Optional[int], lab_slot_id: Optional[int],
     exclude_class_id: Optional[int] = None,
 ) -> List[str]:
-    """Validate a placement. Raises on a hard problem; returns the list of soft warnings (group overlaps)."""
+    """Validate a placement. Raises with a specific message if it clashes; returns a (currently empty) list of notes."""
     theory, lab = _check_slots(db, subject, theory_slot_id, lab_slot_id)
     if theory is None:
         return []
     cache = slot_intervals(db)
     mine = list(cache.get(theory.id, [])) + (list(cache.get(lab.id, [])) if lab else [])
+    mine_parts: List[Part] = [("theory", theory)] + ([("lab", lab)] if lab else [])
     if lab and intervals_overlap(cache.get(theory.id, []), cache.get(lab.id, [])):
+        c = part_clashes([("theory", theory)], [("lab", lab)], cache)[0]
         raise ValidationFailed(
-            f"The theory slot {theory.name} and lab slot {lab.name} overlap in time.", code="SLOT_SELF_CLASH"
+            f"The theory slot {theory.name} and the lab slot {lab.name} of {subject.code} overlap "
+            f"(on {c.when}). Choose a lab slot that does not overlap the theory slot.",
+            code="SLOT_SELF_CLASH",
         )
     clash = faculty_clashes(db, faculty_id, mine, cache, exclude_class_id)
     if clash:
         c = clash[0]
+        fac = db.get(Faculty, faculty_id)
+        who = fac.user.name if fac else "This faculty member"
+        pc = part_clashes(mine_parts, class_parts(c), cache)[0]
         raise ConflictError(
-            f"This faculty member already teaches {c.subject.code} in {c.theory_slot.name}"
-            f"{' / ' + c.lab_slot.name if c.lab_slot else ''}, which overlaps in time.",
+            f"{who} already teaches {c.subject.code} at that time. "
+            + pc.sentence(f"the new {subject.code}", c.subject.code),
             code="FACULTY_CLASH",
         )
     return []
@@ -250,7 +315,7 @@ def set_placement(
     db: Session, class_id: int, theory_slot_id: Optional[int], lab_slot_id: Optional[int]
 ) -> Dict[str, Any]:
     """Place (or un-place) an offering. Rooms are then reassigned automatically."""
-    from app.services import capacity_service, room_service, timetable_service
+    from app.services import capacity_service, room_service
 
     cls = capacity_service.get_class(db, class_id, lock=True)
     if is_locked(db, cls):
@@ -267,9 +332,8 @@ def set_placement(
         raise ConflictError(
             "No free room of the right type and size is available during those periods.", code="NO_ROOM"
         )
-    warnings = timetable_service.group_warnings(db, cls)
     db.commit()
-    return {"class_id": cls.id, "warnings": warnings}
+    return {"class_id": cls.id, "warnings": []}
 
 
 # --------------------------------------------------------------------------- #
@@ -284,10 +348,13 @@ def eligible_faculty(
     cache = slot_intervals(db)
     theory, lab = _check_slots(db, subject, theory_slot_id, lab_slot_id) if theory_slot_id else (None, None)
     mine: List[Interval] = []
+    mine_parts: List[Part] = []
     if theory:
         mine += cache.get(theory.id, [])
+        mine_parts.append(("theory", theory))
     if lab:
         mine += cache.get(lab.id, [])
+        mine_parts.append(("lab", lab))
 
     already = set(db.scalars(select(ClassSection.faculty_id).where(ClassSection.subject_id == subject_id)))
     load = dict(
@@ -304,7 +371,12 @@ def eligible_faculty(
             clash = faculty_clashes(db, f.user_id, mine, cache)
             if clash:
                 c = clash[0]
-                unavailable.append({**row, "reason": f"teaches {c.subject.code} in {c.theory_slot.name}"})
+                pc = part_clashes(mine_parts, class_parts(c), cache)[0]
+                unavailable.append({
+                    **row,
+                    "reason": f"teaches {c.subject.code} at the same time — the chosen {pc.a_kind} slot {pc.a_slot} "
+                              f"overlaps {c.subject.code}'s {pc.b_kind} slot {pc.b_slot} ({pc.when})",
+                })
                 continue
         available.append(row)
     return {"available": available, "unavailable": unavailable}

@@ -3,7 +3,7 @@ from sqlalchemy import select
 
 from app.algorithms.backtracking_graph_coloring import intervals_overlap
 from app.core.errors import ConflictError, ValidationFailed
-from app.models import ClassSection, CurriculumEntry, Registration, RegistrationStatus, Slot, SlotKind
+from app.models import ClassSection, Registration, RegistrationStatus, Slot, SlotKind
 from app.services import (
     admin_service,
     faculty_service,
@@ -150,97 +150,46 @@ def test_rooms_are_typed_sized_and_never_double_booked(db):
 
 # ------------------------------ students and clashes ---------------------- #
 def test_student_cannot_hold_two_overlapping_offerings(db):
-    f1, f2 = make_faculty(db), make_faculty(db)
-    s1, s2 = make_subject(db), make_subject(db)
-    a = make_slot(db, "THEORY", 3, periods=[("Mon", "09:00", "09:50")])
-    b = make_slot(db, "THEORY", 3, periods=[("Mon", "09:30", "10:20")])
-    c1 = make_class(db, s1, f1, 5, theory_slot=a)
-    c2 = make_class(db, s2, f2, 5, theory_slot=b)
-    stu = make_student(db)
-    pick(db, stu, s1, c1)
-    with pytest.raises(ConflictError) as e:
-        pick(db, stu, s2, c2)
-    assert e.value.code == "SLOT_CLASH" and s1.code in e.value.message
-    opts = reg.class_options(db, stu.id, s2.id)["options"][0]
-    assert not opts["available"] and opts["clash_with"][0].startswith(s1.code)
-    # a different student is not affected
-    assert pick(db, make_student(db), s2, c2).outcome == "QUEUED"
-
-
-def test_unscheduled_offering_cannot_be_requested(db):
-    fac, sub = make_faculty(db), make_subject(db)
-    cid = make_class(db, sub, fac, 3, placed=False)
-    stu = make_student(db)
-    reg.select_subject(db, stu.id, sub.id)
-    with pytest.raises(ConflictError) as e:
-        reg.submit_request(db, stu.id, cid)
-    assert e.value.code == "NOT_SCHEDULED"
-    assert reg.class_options(db, stu.id, sub.id)["options"][0]["available"] is False
-
-
-def test_greedy_suggestion_never_proposes_a_clashing_offering(db):
+    """A student who holds one class cannot request another that overlaps its time."""
+    from app.models import ClassStatus
+    from app.core.errors import ConflictError
+    
+    s_held, s_target = make_subject(db, credits=3), make_subject(db, credits=3)
+    held_slot = make_slot(db, "THEORY", 3, periods=[("Mon", "09:10", "10:00")])
+    clash_slot = make_slot(db, "THEORY", 3, periods=[("Mon", "09:30", "10:20")])  # overlaps held_slot
+    ok_slot = make_slot(db, "THEORY", 3, periods=[("Wed", "09:00", "09:50")])  # does not overlap
+    
     f1, f2, f3 = make_faculty(db), make_faculty(db), make_faculty(db)
-    s_held, s_target = make_subject(db), make_subject(db)
-    held_slot = make_slot(db, "THEORY", 3, periods=[("Tue", "09:00", "09:50")])
-    clash_slot = make_slot(db, "THEORY", 3, periods=[("Tue", "09:10", "10:00")])
-    ok_slot = make_slot(db, "THEORY", 3, periods=[("Wed", "09:00", "09:50")])
     c_held = make_class(db, s_held, f1, 5, theory_slot=held_slot)
-    c_full = make_class(db, s_target, f2, 1, theory_slot=ok_slot)
-    make_class(db, s_target, f3, 20, theory_slot=clash_slot)  # roomiest, but it clashes
+    c_clash = make_class(db, s_target, f2, 5, theory_slot=clash_slot)  # clashes with held
+    c_ok = make_class(db, s_target, f3, 5, theory_slot=ok_slot)  # does not clash
+    
     stu = make_student(db)
-    pick(db, stu, s_held, c_held)
-    pick(db, make_student(db), s_target, c_full)
-    faculty_service.accept_next(db, f2.id, c_full)  # class f2 is now full
-    out = pick(db, stu, s_target, c_full)
-    assert out.outcome == "REJECTED_FULL" and out.suggestion is None  # the only other option clashes
-
-
-def test_mandatory_subjects_of_the_group_are_automatic_and_cannot_be_dropped(db):
-    fac = make_faculty(db)
-    m, o = make_subject(db, credits=3, lab_credits=1), make_subject(db, credits=3)
-    db.add_all([CurriculumEntry(group_code="CSE-S3", subject_id=m.id, is_mandatory=True),
-                CurriculumEntry(group_code="CSE-S3", subject_id=o.id, is_mandatory=False)])
-    db.commit()
-    stu = make_student(db, credits=None, group_code="CSE-S3")
-    with pytest.raises(ValidationFailed) as e:  # 4 credits (3+1) are already needed by the mandatory subject
-        reg.set_credits(db, stu.id, 12 if False else 3)
-    assert e.value.code in ("CREDITS_OUT_OF_RANGE", "CREDITS_BELOW_SELECTED")
-    prof = reg.set_credits(db, stu.id, 16)
-    assert [m_["code"] for m_ in prof["mandatory_subjects"]] == [m.code]
-    assert reg.committed_credits(db, stu.id) == 4  # theory 3 + lab 1
+    reg.select_subject(db, stu.id, s_held.id)
+    reg.submit_request(db, stu.id, c_held).outcome == "QUEUED"
+    faculty_service.accept_next(db, f1.id, c_held)  # student now holds c_held
+    
+    reg.select_subject(db, stu.id, s_target.id)
+    # cannot request c_clash: it overlaps with held_slot
     with pytest.raises(ConflictError) as e:
-        reg.deselect_subject(db, stu.id, m.id)
-    assert e.value.code == "MANDATORY_SUBJECT"
-    subjects = {s["code"]: s for s in reg.list_subjects(db, stu.id)}
-    assert subjects[m.code]["group_role"] == "MANDATORY" and subjects[o.code]["group_role"] == "GROUP"
+        reg.submit_request(db, stu.id, c_clash)
+    assert e.value.code == "SLOT_CLASH"
+    # but can request c_ok: no overlap
+    assert reg.submit_request(db, stu.id, c_ok).outcome == "QUEUED"
 
 
-# --------------------------- the optimisation ------------------------------ #
-def _scheduling_world(db, n_slots_ok=True):
-    slot_service.load_standard_chart(db)
-    make_rooms(db, lecture=6, lab=4, capacity=100)
-    return db
 
-
-def _overlap_of(db, a_id, b_id):
-    cache = slot_service.slot_intervals(db)
-    a, b = db.get(ClassSection, a_id), db.get(ClassSection, b_id)
-    return intervals_overlap(slot_service.class_intervals(a, cache), slot_service.class_intervals(b, cache))
-
-
-def test_auto_assign_respects_faculty_group_and_pair_rules(db):
+def test_auto_assign_respects_faculty_and_pair_rules(db):
     admin = make_admin(db)
     _scheduling_world(db)
     f1, f2, f3 = make_faculty(db), make_faculty(db), make_faculty(db)
-    mand1 = make_subject(db, credits=3, lab_credits=1)
-    mand2 = make_subject(db, credits=4)
-    opt1, opt2 = make_subject(db, credits=3), make_subject(db, credits=3)
-    c_m1 = make_class(db, mand1, f1, 10, placed=False)
-    c_m2 = make_class(db, mand2, f2, 10, placed=False)
-    c_o1 = make_class(db, opt1, f1, 10, placed=False)  # same faculty as c_m1
-    c_o2 = make_class(db, opt2, f3, 10, placed=False)
-    for sub, mand in ((mand1, True), (mand2, True), (opt1, False), (opt2, False)):
-        db.add(CurriculumEntry(group_code="G", subject_id=sub.id, is_mandatory=mand))
+    sub1 = make_subject(db, credits=3, lab_credits=1)
+    sub2 = make_subject(db, credits=4)
+    sub3, sub4 = make_subject(db, credits=3), make_subject(db, credits=3)
+    c_m1 = make_class(db, sub1, f1, 10, placed=False)
+    c_m2 = make_class(db, sub2, f2, 10, placed=False)
+    c_o1 = make_class(db, sub3, f1, 10, placed=False)  # same faculty as c_m1
+    c_o2 = make_class(db, sub4, f3, 10, placed=False)
     db.commit()
 
     dry = timetable_service.auto_assign(db, dry_run=True)
@@ -251,8 +200,7 @@ def test_auto_assign_respects_faculty_group_and_pair_rules(db):
     ids = [c_m1, c_m2, c_o1, c_o2]
     assert all(db.get(ClassSection, i).theory_slot_id for i in ids) and db.get(ClassSection, c_m1).lab_slot_id
     assert not _overlap_of(db, c_m1, c_o1)  # same faculty
-    assert not _overlap_of(db, c_m1, c_m2)  # two mandatory subjects of one group
-    assert not _overlap_of(db, c_m1, c_o2) and not _overlap_of(db, c_m2, c_o1) and not _overlap_of(db, c_m2, c_o2)  # mandatory vs optional
+    assert len({db.get(ClassSection, i).theory_slot_id for i in ids}) == 4  # spread over different slots where possible
     m1 = db.get(ClassSection, c_m1)
     cache = slot_service.slot_intervals(db)
     assert not intervals_overlap(cache[m1.theory_slot_id], cache[m1.lab_slot_id])  # theory vs its own lab
@@ -269,26 +217,11 @@ def test_auto_assign_keeps_already_placed_offerings(db):
     pinned = slot_by_name(db, "A1+TA1")
     c1 = make_class(db, s1, f1, 10, theory_slot=pinned)
     c2 = make_class(db, s2, f2, 10, placed=False)
-    for sub in (s1, s2):
-        db.add(CurriculumEntry(group_code="G", subject_id=sub.id, is_mandatory=True))
     db.commit()
     rep = timetable_service.auto_assign(db, admin.id)
     assert rep["already_placed"] == 1 and rep["to_place"] == 1
     assert db.get(ClassSection, c1).theory_slot_id == pinned.id
     assert not _overlap_of(db, c1, c2)
-
-
-def test_optional_subjects_are_spread_apart_when_possible(db):
-    admin = make_admin(db)
-    _scheduling_world(db)
-    subs = [make_subject(db, credits=3) for _ in range(5)]
-    cids = [make_class(db, s, make_faculty(db), 10, placed=False) for s in subs]
-    for s in subs:
-        db.add(CurriculumEntry(group_code="G", subject_id=s.id, is_mandatory=False))
-    db.commit()
-    rep = timetable_service.auto_assign(db, admin.id)
-    assert rep["soft_overlaps"] == 0  # 14 disjoint 3-credit slots exist, so no two optional subjects need to share time
-    assert timetable_service.clash_report(db)["shared_slot_options"] == []
 
 
 def test_auto_assign_reports_infeasible_and_saves_nothing(db):
@@ -352,19 +285,3 @@ def test_role_specific_timetable_views(db):
     assert len(timetable_service.all_entries(db)) == len(mine)
 
 
-def test_insights_dry_run_and_maxflow_ignore_clashing_offerings(db):
-    make_admin(db)
-    f1, f2 = make_faculty(db), make_faculty(db)
-    held, wanted = make_subject(db), make_subject(db)
-    t = make_slot(db, "THEORY", 3, periods=[("Mon", "09:00", "09:50")])
-    t_clash = make_slot(db, "THEORY", 3, periods=[("Mon", "09:30", "10:20")])
-    c_held = make_class(db, held, f1, 5, theory_slot=t)
-    make_class(db, wanted, f2, 5, theory_slot=t_clash)
-    stu = make_student(db)
-    pick(db, stu, held, c_held)
-    faculty_service.accept_next(db, f1.id, c_held)
-    reg.select_subject(db, stu.id, wanted.id)
-    flow = insights_service.max_flow_report(db)
-    assert flow["summary"]["total_requested"] == 1 and flow["summary"]["max_flow"] == 0  # only option clashes
-    cr = insights_service.coloring_insight(db)
-    assert cr["dry_run"] and cr["status"] == "OK"

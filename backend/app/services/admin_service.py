@@ -10,7 +10,6 @@ from app.core.errors import ConflictError, NotFoundError, ValidationFailed
 from app.core.security import hash_password
 from app.models import (
     ClassSection,
-    CurriculumEntry,
     Faculty,
     FacultySubject,
     JoinRequest,
@@ -49,13 +48,10 @@ def create_faculty(db: Session, name: str, email: str, password: str, employee_c
 
 
 def create_student(
-    db: Session, name: str, email: str, password: str, roll_number: str,
-    max_credits: Optional[int] = None, group_code: Optional[str] = None,
+    db: Session, name: str, email: str, password: str, roll_number: str, max_credits: Optional[int] = None,
 ) -> User:
     user = User(name=name, email=email.lower(), password_hash=hash_password(password), role=Role.STUDENT)
-    user.student = Student(
-        roll_number=roll_number, max_credits=max_credits or app_settings.DEFAULT_MAX_CREDITS, group_code=group_code
-    )
+    user.student = Student(roll_number=roll_number, max_credits=max_credits or app_settings.DEFAULT_MAX_CREDITS)
     db.add(user)
     _commit_unique(db, "A user with this email or roll number already exists.")
     return user
@@ -89,23 +85,11 @@ def list_students(db: Session) -> List[Dict[str, Any]]:
             "name": s.user.name,
             "email": s.user.email,
             "roll_number": s.roll_number,
-            "group_code": s.group_code,
             "selected_credits": s.selected_credits,
             "max_credits": s.max_credits,
         }
         for s in rows
     ]
-
-
-def list_curriculum(db: Session) -> List[Dict[str, Any]]:
-    out: Dict[str, Dict[str, List[str]]] = {}
-    for g, code, mand in db.execute(
-        select(CurriculumEntry.group_code, Subject.code, CurriculumEntry.is_mandatory)
-        .join(Subject, Subject.id == CurriculumEntry.subject_id)
-        .order_by(CurriculumEntry.group_code, Subject.code)
-    ):
-        out.setdefault(g, {"mandatory": [], "optional": []})["mandatory" if mand else "optional"].append(code)
-    return [{"group_code": g, **v} for g, v in out.items()]
 
 
 # --------------------------------------------------------------------------- #
@@ -146,6 +130,8 @@ def list_classes(db: Session) -> List[Dict[str, Any]]:
                 "lab_room": c.lab_room.name if c.lab_room else None,
                 "scheduled": c.is_scheduled,
                 "locked": c.enrolled_count > 0 or pending.get(c.id, 0) > 0,
+                "reopen_requested": c.reopen_requested_at is not None,
+                "reopen_requested_at": c.reopen_requested_at,
             }
         )
     return out
@@ -155,9 +141,6 @@ def list_subjects(db: Session) -> List[Dict[str, Any]]:
     by_subject: Dict[int, List[Dict[str, Any]]] = {}
     for c in list_classes(db):
         by_subject.setdefault(c["subject_id"], []).append(c)
-    groups: Dict[int, List[str]] = {}
-    for g, sid, mand in db.execute(select(CurriculumEntry.group_code, CurriculumEntry.subject_id, CurriculumEntry.is_mandatory)):
-        groups.setdefault(sid, []).append(f"{g}{' (mandatory)' if mand else ''}")
     return [
         {
             "id": s.id,
@@ -166,7 +149,6 @@ def list_subjects(db: Session) -> List[Dict[str, Any]]:
             "credits": s.credits,
             "lab_credits": s.lab_credits,
             "has_lab": s.has_lab,
-            "groups": sorted(groups.get(s.id, [])),
             "offerings": by_subject.get(s.id, []),
         }
         for s in db.scalars(select(Subject).order_by(Subject.code))
@@ -238,8 +220,6 @@ def create_offering(
     if theory_slot_id is not None and cls.id in rooms["unassigned_class_ids"]:
         db.rollback()
         raise ConflictError("No free room of the right type and size is available during those periods.", code="NO_ROOM")
-    if theory_slot_id is not None:
-        warnings = timetable_service.group_warnings(db, cls)
     db.commit()
     return {"class_id": cls.id, "warnings": warnings}
 
@@ -337,10 +317,16 @@ def demand_report(db: Session) -> Dict[str, Any]:
         turned_away[sid] = n
 
     subjects = []
+    open_seats: Dict[int, int] = {}
     for s in db.scalars(select(Subject).order_by(Subject.code)):
         cs = by_subject.get(s.id, [])
         counts = reg_counts.get(s.id, {})
-        unmet = counts.get("SELECTED", 0)
+        not_requested = counts.get("SELECTED", 0)  # picked the subject; in nobody's queue
+        waiting = counts.get("REQUESTED", 0)       # in a faculty member's queue
+        seats = sum(c["remaining"] for c in cs if c["status"] == "OPEN" and c["scheduled"])
+        open_seats[s.id] = seats
+        # Students who cannot be seated with the seats that exist: everybody still wanting a seat minus the free seats.
+        unmet = max(0, not_requested + waiting - seats)
         subjects.append(
             {
                 "subject_id": s.id,
@@ -348,14 +334,14 @@ def demand_report(db: Session) -> Dict[str, Any]:
                 "name": s.name,
                 "demand": sum(counts.values()),
                 "enrolled": counts.get("ENROLLED", 0),
-                "pending": counts.get("REQUESTED", 0),
+                "pending": waiting,
+                "not_requested": not_requested,
                 "unmet": unmet,
                 "turned_away": turned_away.get(s.id, 0),
                 "total_capacity": sum(c["capacity"] for c in cs),
-                "seats_remaining": sum(c["remaining"] for c in cs if c["status"] == "OPEN"),
+                "seats_remaining": seats,
                 "classes": cs,
-                "no_faculty_available": bool(unmet or counts.get("REQUESTED", 0))
-                and not any(c["status"] == "OPEN" and c["remaining"] > 0 and c["scheduled"] for c in cs),
+                "no_faculty_available": bool(not_requested or waiting) and seats == 0,
             }
         )
     waitlist = []
@@ -376,9 +362,31 @@ def demand_report(db: Session) -> Dict[str, Any]:
                 "subject_id": subj.id,
                 "subject_code": subj.code,
                 "since": reg.created_at,
+                "reason": "Has not chosen a faculty yet" if open_seats.get(subj.id, 0) > 0
+                else "No class of this subject has a free seat",
             }
         )
     return {"subjects": subjects, "waitlist": waitlist, "total_unmet": sum(s["unmet"] for s in subjects)}
+
+
+def reopen_requests(db: Session) -> List[Dict[str, Any]]:
+    """Closed classes whose faculty member asked for them to be reopened, oldest request first."""
+    rows = db.scalars(
+        select(ClassSection).where(ClassSection.reopen_requested_at.is_not(None)).order_by(ClassSection.reopen_requested_at)
+    )
+    return [
+        {
+            "class_id": c.id,
+            "subject_code": c.subject.code,
+            "subject_name": c.subject.name,
+            "faculty_name": c.faculty.user.name,
+            "enrolled_count": c.enrolled_count,
+            "capacity": c.capacity,
+            "remaining": c.remaining,
+            "requested_at": c.reopen_requested_at,
+        }
+        for c in rows
+    ]
 
 
 def dashboard(db: Session) -> Dict[str, Any]:
@@ -395,6 +403,7 @@ def dashboard(db: Session) -> Dict[str, Any]:
         "total_capacity": sum(c["capacity"] for c in classes),
         "total_enrolled": sum(c["enrolled_count"] for c in classes),
         "unmet_demand": demand_report(db)["total_unmet"],
+        "reopen_requests": reopen_requests(db),
         "hard_clashes": len(clashes["hard_clashes"]) + len(clashes["student_clashes"]),
         "no_room": len(clashes["no_room"]),
     }

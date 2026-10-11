@@ -1,19 +1,16 @@
-"""Scheduling optimisation: automatic slot suggestion, clash report, slot chart and role-specific timetables.
+"""Scheduling: automatic slot suggestion, clash report, slot chart and role-specific timetables.
 
-The optimisation problem (solved by ``backtracking_slot_assignment``):
+The automatic scheduler fits every class that has no slot yet into the weekly slot chart:
 
-  vertices  every offering's theory part, and its lab part for theory+lab courses
-  domain    slot packages of the right kind and credit value (a 3-credit theory part can only take 3-credit theory slots)
-  hard      must never overlap in time:
-              - two parts of the same faculty member
-              - the theory and lab of one offering
-              - two *mandatory* subjects of the same student group  (every student of the group takes both)
-              - a mandatory subject vs an optional subject of the same group (the optional one would be unpickable)
-  soft      preferably not overlapping: two optional subjects of one group (students want to combine them)
-  fixed     offerings that are already placed stay exactly where they are
-  rooms     at most (number of lecture / lab rooms) parts may meet in the identical period
+  hard rules   these must never overlap in time:
+                 - two classes taught by the same faculty member
+                 - the theory part and the lab part of one class
+  room limit   at most (number of lecture / lab rooms) parts may meet at the identical time
+  fixed        classes that are already placed stay exactly where they are
+  spreading    classes are spread over different slots where possible, so students have more to choose from
 
-Rooms are then derived automatically (``room_service``) - the Admin never enters same-room conflicts.
+Which room each class gets is then derived automatically (``room_service``) - the Admin never enters rooms per class.
+Whether a *student* can combine two subjects is checked when the student picks them (``registration_service``).
 """
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -30,7 +27,6 @@ from app.core.errors import ValidationFailed
 from app.models import (
     AlgorithmRun,
     ClassSection,
-    CurriculumEntry,
     NotificationType,
     Registration,
     RegistrationStatus,
@@ -63,7 +59,6 @@ class Problem:
     vertices: List[int]
     domains: Dict[int, List[int]]
     hard: Dict[int, Set[int]]
-    soft: Dict[int, Set[int]]
     reasons: Dict[Tuple[int, int], List[str]]
     intervals: Dict[int, List[Interval]]
     fixed: Dict[int, int]
@@ -119,7 +114,6 @@ def build_problem(db: Session) -> Problem:
             verts_of_faculty.setdefault(c.faculty_id, []).append(v)
 
     hard: Dict[int, Set[int]] = {v: set() for v in vertices}
-    soft: Dict[int, Set[int]] = {v: set() for v in vertices}
     reasons: Dict[Tuple[int, int], List[str]] = {}
 
     def add(table: Dict[int, Set[int]], a: int, b: int, why: str) -> None:
@@ -141,30 +135,6 @@ def build_problem(db: Session) -> Problem:
                 if a // 2 != b // 2:
                     add(hard, a, b, f"same faculty ({name})")
 
-    groups: Dict[str, Dict[str, List[int]]] = {}
-    for g, sid, mand in db.execute(
-        select(CurriculumEntry.group_code, CurriculumEntry.subject_id, CurriculumEntry.is_mandatory)
-    ):
-        groups.setdefault(g, {"M": [], "N": []})["M" if mand else "N"].append(sid)
-    code_of = {c.subject_id: c.subject.code for c in classes.values()}
-    for g, parts in groups.items():
-        mand = [s for s in parts["M"] if s in verts_of_subject]
-        opt = [s for s in parts["N"] if s in verts_of_subject]
-        for i, m1 in enumerate(mand):
-            for m2 in mand[i + 1:]:
-                for a in verts_of_subject[m1]:
-                    for b in verts_of_subject[m2]:
-                        add(hard, a, b, f"{g}: mandatory {code_of[m1]} + {code_of[m2]}")
-            for n in opt:
-                for a in verts_of_subject[m1]:
-                    for b in verts_of_subject[n]:
-                        add(hard, a, b, f"{g}: mandatory {code_of[m1]} vs optional {code_of[n]}")
-        for i, n1 in enumerate(opt):
-            for n2 in opt[i + 1:]:
-                for a in verts_of_subject[n1]:
-                    for b in verts_of_subject[n2]:
-                        add(soft, a, b, f"{g}: optional subjects")
-
     capacity: Dict[str, int] = {}
     for kind, n in (("LECTURE", RoomKind.LECTURE), ("LAB", RoomKind.LAB)):
         count = len(list(db.scalars(select(Room.id).where(Room.kind == n))))
@@ -173,7 +143,7 @@ def build_problem(db: Session) -> Problem:
     for v in vertices:
         if not domains[v]:
             unplaceable.append(f"{classes[v // 2].subject.code}: no {'lab' if part_of(v) == LAB else str(classes[v // 2].subject.credits) + '-credit theory'} slots exist")
-    return Problem(classes, vertices, domains, hard, soft, reasons, cache, fixed, resource, capacity, slot_names, sorted(set(unplaceable)))
+    return Problem(classes, vertices, domains, hard, reasons, cache, fixed, resource, capacity, slot_names, sorted(set(unplaceable)))
 
 
 def _assigned(problem: Problem) -> Dict[int, int]:
@@ -191,29 +161,8 @@ def _overlap(problem: Problem, a_slot: int, b_slot: int) -> bool:
     return intervals_overlap(problem.intervals.get(a_slot, []), problem.intervals.get(b_slot, []))
 
 
-def group_warnings(db: Session, cls: ClassSection) -> List[str]:
-    """After placing one offering: which already-placed classes does it overlap (beyond blocking errors)?"""
-    problem = build_problem(db)
-    placed = _assigned(problem)
-    out: List[str] = []
-    optional: List[str] = []
-    for part in (THEORY, LAB):
-        v = vid(cls.id, part)
-        if v not in placed:
-            continue
-        for u in problem.hard.get(v, ()):
-            if u in placed and u // 2 != cls.id and _overlap(problem, placed[v], placed[u]):
-                out.append(f"Overlaps {problem.label(u)} - {'; '.join(problem.reasons[_edge(v, u)])}")
-        for u in problem.soft.get(v, ()):
-            if u in placed and _overlap(problem, placed[v], placed[u]):
-                optional.append(problem.classes[u // 2].subject.code)
-    if optional:
-        out.append("Shares time with optional " + ", ".join(sorted(set(optional))[:6]) + ": students of that group can pick only one.")
-    return out
-
-
 # --------------------------------------------------------------------------- #
-# The optimisation: automatic slot suggestion
+# The automatic scheduler
 # --------------------------------------------------------------------------- #
 def auto_assign(db: Session, admin_id: Optional[int] = None, dry_run: bool = False, max_steps: int = 300_000) -> Dict[str, Any]:
     problem = build_problem(db)
@@ -225,7 +174,6 @@ def auto_assign(db: Session, admin_id: Optional[int] = None, dry_run: bool = Fal
         "to_place": len({v // 2 for v in free}),
         "vertices_to_place": len(free),
         "hard_edges": sum(len(s) for s in problem.hard.values()) // 2,
-        "soft_edges": sum(len(s) for s in problem.soft.values()) // 2,
         "rooms": dict(problem.capacity),
     }
     edges = sorted({_edge(a, b) for a, ns in problem.hard.items() for b in ns if a in free or b in free})
@@ -235,23 +183,23 @@ def auto_assign(db: Session, admin_id: Optional[int] = None, dry_run: bool = Fal
     ]
     if not free:
         report.update(status="OK", message="Every offering is already placed.", nodes_visited=0, backtracks=0,
-                      backtracking_required=False, soft_overlaps=0, assignments=[], rooms_unassigned=[])
+                      backtracking_required=False, assignments=[], rooms_unassigned=[])
         return report
     if problem.unplaceable:
         report.update(status="INFEASIBLE", message="; ".join(problem.unplaceable) + ". Load the standard slot chart first.",
-                      nodes_visited=0, backtracks=0, backtracking_required=False, soft_overlaps=0, assignments=[], rooms_unassigned=[])
+                      nodes_visited=0, backtracks=0, backtracking_required=False, assignments=[], rooms_unassigned=[])
         if not dry_run:
             raise ValidationFailed(report["message"], code="NO_SLOTS", extra={"report": report})
         return report
 
     result = backtracking_slot_assignment(
         problem.vertices, problem.domains, problem.hard, problem.intervals,
-        fixed=problem.fixed, soft=problem.soft, resource=problem.resource,
+        fixed=problem.fixed, resource=problem.resource,
         resource_capacity=problem.capacity, max_steps=max_steps,
     )
     report.update(
         status=result.status, message=result.message, nodes_visited=result.nodes_visited, backtracks=result.backtracks,
-        backtracking_required=result.backtracking_required, soft_overlaps=result.soft_overlaps,
+        backtracking_required=result.backtracking_required,
         vertex_order=[problem.label(v) for v in result.order[:40]],
     )
     placements: Dict[int, Dict[str, Optional[int]]] = {}
@@ -275,7 +223,7 @@ def auto_assign(db: Session, admin_id: Optional[int] = None, dry_run: bool = Fal
     if not result.success:
         db.add(AlgorithmRun(algorithm="slot_assignment", status="FAILED", summary=_run_summary(report), triggered_by=admin_id))
         db.commit()
-        raise ValidationFailed(f"Slots could not be assigned: {result.message}", code="PLACEMENT_INFEASIBLE", extra={"report": report})
+        raise ValidationFailed(f"The classes could not all be placed. {result.message}", code="PLACEMENT_INFEASIBLE", extra={"report": report})
 
     for cid, p in placements.items():
         c = problem.classes[cid]
@@ -296,14 +244,14 @@ def auto_assign(db: Session, admin_id: Optional[int] = None, dry_run: bool = Fal
         )
     notification_service.notify_admins(
         db, NotificationType.TIMETABLE_GENERATED,
-        f"Slots assigned for {len(placements)} offering(s); {result.soft_overlaps} optional-subject overlap(s) remain.",
+        f"Slots were assigned to {len(placements)} class(es) automatically.",
     )
     db.commit()
     return report
 
 
 def _run_summary(report: Dict[str, Any]) -> Dict[str, Any]:
-    keep = ("status", "to_place", "already_placed", "hard_edges", "soft_edges", "nodes_visited", "backtracks", "soft_overlaps", "message")
+    keep = ("status", "to_place", "already_placed", "hard_edges", "nodes_visited", "backtracks", "message")
     return {k: report.get(k) for k in keep}
 
 
@@ -321,17 +269,22 @@ def clear_unlocked(db: Session) -> int:
 # --------------------------------------------------------------------------- #
 # Reports
 # --------------------------------------------------------------------------- #
+def _pair_detail(problem: Problem, placed: Dict[int, int], a: int, b: int) -> str:
+    """'Theory/lab clash on Mon 14:00-14:50: X's lab slot L31+L32 overlaps Y's theory slot D1.'"""
+    when = slot_service.overlap_window(problem.intervals.get(placed[a], []), problem.intervals.get(placed[b], []))
+    pc = slot_service.PartClash(
+        part_of(a).lower(), problem.slot_names[placed[a]], part_of(b).lower(), problem.slot_names[placed[b]], when or "",
+    )
+    return pc.sentence(problem.classes[a // 2].subject.code, problem.classes[b // 2].subject.code)
+
+
 def clash_report(db: Session) -> Dict[str, Any]:
     problem = build_problem(db)
     placed = _assigned(problem)
-    hard, soft = [], []
+    hard = []
     for (a, b), why in sorted(problem.reasons.items()):
-        if a in placed and b in placed and _overlap(problem, placed[a], placed[b]):
-            row = {"a": problem.label(a), "b": problem.label(b), "reasons": why}
-            if b in problem.hard.get(a, ()):
-                hard.append(row)
-            elif b in problem.soft.get(a, ()):
-                soft.append(row)
+        if a in placed and b in placed and b in problem.hard.get(a, ()) and _overlap(problem, placed[a], placed[b]):
+            hard.append({"a": problem.label(a), "b": problem.label(b), "reasons": why, "detail": _pair_detail(problem, placed, a, b)})
 
     cache = problem.intervals
     student_rows = []
@@ -346,8 +299,12 @@ def clash_report(db: Session) -> Dict[str, Any]:
     for sid, cs in by_student.items():
         for i, a in enumerate(cs):
             for b in cs[i + 1:]:
-                if intervals_overlap(slot_service.class_intervals(a, cache), slot_service.class_intervals(b, cache)):
-                    student_rows.append({"student": names.get(sid, str(sid)), "a": a.subject.code, "b": b.subject.code})
+                pcs = slot_service.part_clashes(slot_service.class_parts(a), slot_service.class_parts(b), cache)
+                if pcs:
+                    student_rows.append({
+                        "student": names.get(sid, str(sid)), "a": a.subject.code, "b": b.subject.code,
+                        "detail": pcs[0].sentence(a.subject.code, b.subject.code),
+                    })
 
     return {
         "unscheduled": [
@@ -360,7 +317,6 @@ def clash_report(db: Session) -> Dict[str, Any]:
             if c.is_scheduled and (c.room_id is None or (c.lab_slot_id and c.lab_room_id is None))
         ],
         "hard_clashes": hard,
-        "shared_slot_options": soft,
         "student_clashes": student_rows,
     }
 

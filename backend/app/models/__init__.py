@@ -10,12 +10,12 @@ from app.models.enums import (
     SlotKind,
 )
 from app.models.registration import JoinRequest, Registration
-from app.models.scheduling import CurriculumEntry, Room, Slot, SlotPeriod
+from app.models.scheduling import Room, Slot, SlotPeriod
 from app.models.system import AlgorithmRun, Notification, RegistrationSettings
 from app.models.user import Faculty, Student, User
 
 __all__ = [
-    "AlgorithmRun", "ClassSection", "ClassStatus", "CurriculumEntry", "Faculty", "FacultySubject",
+    "AlgorithmRun", "ClassSection", "ClassStatus", "Faculty", "FacultySubject",
     "JoinRequest", "Notification", "NotificationType", "Registration", "RegistrationPhase",
     "RegistrationSettings", "RegistrationStatus", "RequestStatus", "Role", "Room", "RoomKind",
     "Slot", "SlotKind", "SlotPeriod", "Student", "Subject", "User",

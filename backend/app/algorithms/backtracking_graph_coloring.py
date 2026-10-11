@@ -485,8 +485,11 @@ def backtracking_slot_assignment(
                     soft_overlaps += 1
     message = {
         "OK": "Every class was placed without a clash.",
-        "INFEASIBLE": "No clash-free placement exists with the slots, rooms and fixed classes available.",
-        "LIMIT_REACHED": "Search budget exhausted before a placement was found.",
+        "INFEASIBLE": "These classes cannot all be fitted in without a clash using the slots, rooms and hand-placed "
+                      "classes available. Try adding rooms, moving a hand-placed class, or clearing the unlocked slots "
+                      "and running the scheduler again.",
+        "LIMIT_REACHED": "Working out a clash-free timetable is taking too long. Place a few classes by hand and run "
+                         "the scheduler again.",
     }[status]
     return SlotAssignmentResult(
         status, dict(assignment) if ok else {}, stats["nodes"], stats["backtracks"], order, soft_overlaps, message

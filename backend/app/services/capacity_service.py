@@ -197,6 +197,10 @@ def update_capacity(db: Session, class_id: int, new_capacity: int) -> ClassSecti
             f"({cls.remaining} seat(s) free)."
         )
         notification_service.notify(db, cls.faculty_id, NotificationType.CAPACITY_INCREASED, msg)
+        db.flush()
+        from app.services import registration_service  # local import: registration_service imports this module
+
+        auto_queued = set(registration_service.sync_waiting_students(db, cls.subject_id))
         # Tell students who still have no seat for this subject that room has opened up.
         waiting = db.scalars(
             select(Registration.student_id).where(
@@ -205,6 +209,8 @@ def update_capacity(db: Session, class_id: int, new_capacity: int) -> ClassSecti
             )
         ).all()
         for sid in waiting:
+            if sid in auto_queued:
+                continue
             notification_service.notify(
                 db,
                 sid,
@@ -224,6 +230,7 @@ def close_class(db: Session, class_id: int, by_faculty_id: int | None = None) ->
     if cls.status != ClassStatus.OPEN:
         raise ConflictError(f"Class is already {cls.status.value.lower()}.", code="ALREADY_CLOSED")
     cls.status = ClassStatus.CLOSED
+    cls.reopen_requested_at = None
     rejected = reject_all_pending(db, cls, REASON_CLASS_CLOSED)
     msg = f"{class_label(cls)} was closed with {cls.enrolled_count}/{cls.capacity} seat(s) filled."
     notification_service.notify_admins(db, NotificationType.CLASS_CLOSED, msg)
@@ -241,5 +248,52 @@ def reopen_class(db: Session, class_id: int) -> ClassSection:
     if cls.remaining <= 0:
         raise ConflictError("The class has no free seats; increase its capacity first.", code="NO_SEATS")
     cls.status = ClassStatus.OPEN
+    was_requested = cls.reopen_requested_at is not None
+    cls.reopen_requested_at = None
+    if was_requested:
+        notification_service.notify(
+            db, cls.faculty_id, NotificationType.CLASS_REOPENED,
+            f"The administration reopened {class_label(cls)}. It accepts requests again.",
+        )
+    db.flush()
+    from app.services import registration_service  # local import: registration_service imports this module
+
+    registration_service.sync_waiting_students(db, cls.subject_id)
+    db.commit()
+    return cls
+
+
+def request_reopen(db: Session, class_id: int) -> ClassSection:
+    """A faculty member asks the administration to reopen a class that was closed. (Ownership is checked by the caller.)"""
+    cls = get_class(db, class_id, lock=True)
+    if cls.status != ClassStatus.CLOSED:
+        raise ConflictError(
+            "Only a closed class can be reopened. "
+            + ("This class is full; ask the administration to add seats instead." if cls.status == ClassStatus.FULL
+               else "This class is already open."),
+            code="NOT_CLOSED",
+        )
+    if cls.reopen_requested_at is not None:
+        raise ConflictError("You have already asked the administration to reopen this class.", code="REOPEN_ALREADY_REQUESTED")
+    cls.reopen_requested_at = utcnow()
+    seats = f"{cls.remaining} seat(s) free" if cls.remaining > 0 else "no free seats, so seats must be added first"
+    notification_service.notify_admins(
+        db, NotificationType.REOPEN_REQUESTED,
+        f"{cls.faculty.user.name} asked to reopen {cls.subject.code} ({cls.enrolled_count}/{cls.capacity} filled; {seats}).",
+        dedupe_key=f"reopen:{cls.id}",
+    )
+    db.commit()
+    return cls
+
+
+def decline_reopen(db: Session, class_id: int) -> ClassSection:
+    cls = get_class(db, class_id, lock=True)
+    if cls.reopen_requested_at is None:
+        raise ConflictError("There is no reopen request for this class.", code="NO_REOPEN_REQUEST")
+    cls.reopen_requested_at = None
+    notification_service.notify(
+        db, cls.faculty_id, NotificationType.REOPEN_DECLINED,
+        f"The administration did not reopen {class_label(cls)}. It stays closed.",
+    )
     db.commit()
     return cls

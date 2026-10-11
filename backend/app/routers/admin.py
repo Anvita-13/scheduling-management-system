@@ -37,13 +37,8 @@ def students(db: Session = Depends(get_db)):
 
 @router.post("/students", status_code=201)
 def create_student(body: s.StudentCreate, db: Session = Depends(get_db)):
-    u = svc.create_student(db, body.name, body.email, body.password, body.roll_number, body.max_credits, body.group_code)
+    u = svc.create_student(db, body.name, body.email, body.password, body.roll_number, body.max_credits)
     return {"user_id": u.id}
-
-
-@router.get("/curriculum")
-def curriculum(db: Session = Depends(get_db)):
-    return svc.list_curriculum(db)
 
 
 # ---- subjects and offerings (faculty + slots) -------------------------------------- #
@@ -125,6 +120,13 @@ def close_class(class_id: int, db: Session = Depends(get_db)):
 @router.post("/classes/{class_id}/reopen")
 def reopen_class(class_id: int, db: Session = Depends(get_db)):
     c = capacity_service.reopen_class(db, class_id)
+    return {"id": c.id, "status": c.status.value}
+
+
+@router.post("/classes/{class_id}/decline-reopen")
+def decline_reopen(class_id: int, db: Session = Depends(get_db)):
+    """Turn down a faculty member's request to reopen a closed class (the class stays closed)."""
+    c = capacity_service.decline_reopen(db, class_id)
     return {"id": c.id, "status": c.status.value}
 
 

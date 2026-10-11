@@ -67,7 +67,8 @@ def test_database_connection_failure_returns_clear_503(client):
     app.dependency_overrides[get_db] = broken_db
     r = client.post("/api/auth/login", json={"email": "a@b.edu", "password": "x"})
     assert r.status_code == 503 and r.json()["code"] == "DB_UNAVAILABLE"
-    assert "DATABASE_URL" in r.json()["detail"]
+    # users get a plain message; technical details (passwords, settings) are never sent to the browser
+    assert "try again" in r.json()["detail"] and "DATABASE_URL" not in r.json()["detail"] and "password" not in r.json()["detail"]
 
 
 def test_cors_origins_accepts_comma_list_json_and_single(monkeypatch):
@@ -91,4 +92,5 @@ def test_outdated_database_schema_returns_clear_503(client):
 
     app.dependency_overrides[get_db] = old_schema_db
     r = client.post("/api/auth/login", json={"email": "a@b.edu", "password": "x"})
-    assert r.status_code == 503 and r.json()["code"] == "SCHEMA_OUTDATED" and "DROP SCHEMA" in r.json()["detail"]
+    assert r.status_code == 503 and r.json()["code"] == "SCHEMA_OUTDATED" and "DROP SCHEMA" not in r.json()["detail"]
+    assert "administrator" in r.json()["detail"]

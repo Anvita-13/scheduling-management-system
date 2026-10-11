@@ -243,8 +243,12 @@ def test_admin_capacity_increase_reopens_full_class_and_notifies(db, world):
     cls = capacity_service.update_capacity(db, world["cid"], 4)
     assert cls.status == ClassStatus.OPEN and cls.remaining == 2
     assert notes(db, world["fac"].id, NotificationType.CAPACITY_INCREASED)
-    assert notes(db, waiting.id, NotificationType.CAPACITY_INCREASED)  # unmet student invited back
-    assert reg.submit_request(db, waiting.id, world["cid"]).outcome == "QUEUED"
+    assert notes(db, waiting.id, NotificationType.CAPACITY_INCREASED)  # unmet student told a seat is available
+    # the subject has a single faculty, so the waiting student was put in the queue automatically
+    with pytest.raises(ConflictError) as e:
+        reg.submit_request(db, waiting.id, world["cid"])
+    assert e.value.code == "REQUEST_ALREADY_PENDING"
+    assert [r.student_id for r in capacity_service.pending_requests_in_order(db, world["cid"])] == [waiting.id]
 
 
 def test_admin_cannot_set_capacity_below_enrolled(db, world):

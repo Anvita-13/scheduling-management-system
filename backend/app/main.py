@@ -14,7 +14,7 @@ logger = logging.getLogger("uvicorn.error")
 app = FastAPI(
     title=settings.APP_NAME,
     version="1.0.0",
-    description="Centralised scheduling & subject-registration system (Phase 1 DAA algorithms).",
+    description="College timetable scheduling and subject registration.",
 )
 
 app.add_middleware(
@@ -40,8 +40,8 @@ async def database_unavailable_handler(_: Request, exc: OperationalError):
     return JSONResponse(
         status_code=503,
         content={
-            "detail": "The server cannot reach the database. Check DATABASE_URL (user, password, host, "
-            "database name) in backend/.env and that PostgreSQL is running.",
+            "detail": "The service is temporarily unavailable. Please try again in a minute or two. "
+            "If it keeps happening, contact the administrator.",
             "code": "DB_UNAVAILABLE",
         },
     )
@@ -55,8 +55,8 @@ async def schema_problem_handler(_: Request, exc: ProgrammingError):
         return JSONResponse(
             status_code=503,
             content={
-                "detail": "The database structure is out of date. Recreate it: run DROP SCHEMA public CASCADE; "
-                "CREATE SCHEMA public; then 'alembic upgrade head' and 'python -m app.db.seed' (see SETUP.md).",
+                "detail": "The service needs a maintenance update before it can be used. Please contact the "
+                "administrator.",
                 "code": "SCHEMA_OUTDATED",
             },
         )

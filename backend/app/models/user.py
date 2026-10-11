@@ -39,8 +39,6 @@ class Student(Base):
     roll_number: Mapped[str] = mapped_column(String(30), unique=True)
     max_credits: Mapped[int] = mapped_column(Integer, default=24)
     selected_credits: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    # Programme + semester, e.g. "CSE-S3"; drives mandatory subjects and predicted clashes.
-    group_code: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
 
     user: Mapped[User] = relationship(back_populates="student")
 

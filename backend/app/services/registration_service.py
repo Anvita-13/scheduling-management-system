@@ -1,7 +1,9 @@
 """Student-side registration workflow: credits -> subjects -> offering (faculty + slots) -> FIFO join request.
 
 An offering is a complete unit (theory slot + its own lab slot), so one request covers both. A student can never
-hold two offerings whose periods overlap: such requests are refused with the name of the clashing subject.
+hold two offerings whose periods overlap: such requests are refused and the message says which parts clash
+(theory/theory, theory/lab or lab/lab) and when. A subject that has only one faculty is requested automatically
+the moment the student picks it, because there is nothing left to choose.
 """
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -16,7 +18,6 @@ from app.core.errors import ConflictError, NotFoundError, ValidationFailed
 from app.models import (
     ClassSection,
     ClassStatus,
-    CurriculumEntry,
     JoinRequest,
     NotificationType,
     Registration,
@@ -79,25 +80,6 @@ def committed_credits(db: Session, student_id: int) -> int:
     ) or 0
 
 
-def group_curriculum(db: Session, group_code: Optional[str]) -> Dict[int, bool]:
-    """subject id -> is_mandatory for the student's group (empty if the student has no group)."""
-    if not group_code:
-        return {}
-    return dict(
-        db.execute(
-            select(CurriculumEntry.subject_id, CurriculumEntry.is_mandatory).where(CurriculumEntry.group_code == group_code)
-        ).all()
-    )
-
-
-def _missing_mandatory(db: Session, student: Student) -> List[Subject]:
-    mandatory = [sid for sid, m in group_curriculum(db, student.group_code).items() if m]
-    if not mandatory:
-        return []
-    have = set(db.scalars(select(Registration.subject_id).where(Registration.student_id == student.user_id)))
-    return [s for s in db.scalars(select(Subject).where(Subject.id.in_(mandatory)).order_by(Subject.code)) if s.id not in have]
-
-
 # --------------------------------------------------------------------------- #
 # Credits & subjects
 # --------------------------------------------------------------------------- #
@@ -105,22 +87,15 @@ def profile(db: Session, user_id: int) -> Dict[str, Any]:
     st = get_student(db, user_id)
     lo, hi = allowed_credit_range(db, st)
     s = get_registration_settings(db)
-    cur = group_curriculum(db, st.group_code)
-    mandatory = sorted(
-        (sub.code, sub.total_credits)
-        for sub in db.scalars(select(Subject).where(Subject.id.in_([i for i, m in cur.items() if m] or [0])))
-    )
     return {
         "user_id": st.user_id,
         "name": st.user.name,
         "email": st.user.email,
         "roll_number": st.roll_number,
-        "group_code": st.group_code,
         "selected_credits": st.selected_credits,
         "min_credits": lo,
         "max_credits": hi,
         "committed_credits": committed_credits(db, st.user_id),
-        "mandatory_subjects": [{"code": c, "credits": cr} for c, cr in mandatory],
         "registration_open": s.phase == RegistrationPhase.OPEN,
     }
 
@@ -132,24 +107,59 @@ def set_credits(db: Session, user_id: int, credits: int) -> Dict[str, Any]:
     if not lo <= credits <= hi:
         raise ValidationFailed(f"Credits must be between {lo} and {hi}.", code="CREDITS_OUT_OF_RANGE")
     used = committed_credits(db, user_id)
-    missing = _missing_mandatory(db, st)
-    needed = used + sum(s.total_credits for s in missing)
-    if credits < needed:
+    if credits < used:
         raise ValidationFailed(
-            f"Your mandatory subjects and current selections already need {needed} credits; "
-            "drop an optional subject or choose a higher credit load.",
+            f"You have already chosen subjects worth {used} credits; "
+            "drop a subject or choose a higher credit load.",
             code="CREDITS_BELOW_SELECTED",
         )
     st.selected_credits = credits
-    for s in missing:  # mandatory subjects of the student's group are registered automatically
-        db.add(Registration(student_id=user_id, subject_id=s.id, status=RegistrationStatus.SELECTED))
     db.commit()
     return profile(db, user_id)
 
 
+def _scheduled_classes_by_subject(db: Session) -> Dict[int, List[ClassSection]]:
+    out: Dict[int, List[ClassSection]] = {}
+    for c in db.scalars(select(ClassSection).where(ClassSection.theory_slot_id.is_not(None)).order_by(ClassSection.id)):
+        out.setdefault(c.subject_id, []).append(c)
+    return out
+
+
+def subject_clashes(
+    subject_id: int, regs: Dict[int, Registration],
+    scheduled: Dict[int, List[ClassSection]], cache: slot_service.IntervalCache,
+) -> List[Dict[str, Any]]:
+    """Subjects the student already picked that this subject can never be combined with.
+
+    Two subjects are in unavoidable clash when no faculty option of one fits beside any option of the other. For a
+    subject the student already holds a class in, only that class counts; for one still waiting for a faculty choice
+    every scheduled option counts. (If nothing is scheduled yet there is nothing to compare.)
+    """
+    mine = scheduled.get(subject_id, [])
+    if not mine:
+        return []
+    blocked: List[Dict[str, Any]] = []
+    for other_id, reg in regs.items():
+        if other_id == subject_id:
+            continue
+        theirs = [reg.class_section] if reg.class_id and reg.class_section else scheduled.get(other_id, [])
+        if not theirs:
+            continue
+        if any(
+            not intervals_overlap(slot_service.class_intervals(a, cache), slot_service.class_intervals(b, cache))
+            for a in mine for b in theirs
+        ):
+            continue  # at least one combination works
+        a, b = mine[0], theirs[0]
+        pc = slot_service.part_clashes(slot_service.class_parts(a), slot_service.class_parts(b), cache)[0]
+        msg = pc.sentence(a.subject.code, b.subject.code)
+        if len(mine) > 1 or len(theirs) > 1:
+            msg += " Every faculty option of these two subjects overlaps in this way."
+        blocked.append({"subject_id": other_id, "code": b.subject.code, "name": b.subject.name, "message": msg})
+    return blocked
+
+
 def list_subjects(db: Session, user_id: int) -> List[Dict[str, Any]]:
-    st = get_student(db, user_id)
-    cur = group_curriculum(db, st.group_code)
     regs = {r.subject_id: r for r in db.scalars(select(Registration).where(Registration.student_id == user_id))}
     open_classes: Dict[int, int] = dict(
         db.execute(
@@ -165,6 +175,8 @@ def list_subjects(db: Session, user_id: int) -> List[Dict[str, Any]]:
     total_classes: Dict[int, int] = dict(
         db.execute(select(ClassSection.subject_id, func.count(ClassSection.id)).group_by(ClassSection.subject_id)).all()
     )
+    scheduled = _scheduled_classes_by_subject(db)
+    cache = slot_service.slot_intervals(db)
     out = []
     for s in db.scalars(select(Subject).order_by(Subject.code)):
         r = regs.get(s.id)
@@ -177,12 +189,12 @@ def list_subjects(db: Session, user_id: int) -> List[Dict[str, Any]]:
                 "lab_credits": s.lab_credits,
                 "total_credits": s.total_credits,
                 "has_lab": s.has_lab,
-                "group_role": None if s.id not in cur else ("MANDATORY" if cur[s.id] else "GROUP"),
                 "selected": r is not None,
                 "registration_status": r.status.value if r else None,
                 "class_id": r.class_id if r else None,
                 "classes_total": total_classes.get(s.id, 0),
                 "classes_available": open_classes.get(s.id, 0),
+                "clashes_with": [] if r else subject_clashes(s.id, regs, scheduled, cache),
             }
         )
     return out
@@ -198,6 +210,14 @@ def select_subject(db: Session, user_id: int, subject_id: int) -> Dict[str, Any]
         raise ValidationFailed("Choose your credit load before selecting subjects.", code="CREDITS_NOT_SET")
     if _registration(db, user_id, subject_id):
         raise ConflictError("You have already registered for this subject.", code="ALREADY_REGISTERED")
+    regs = {r.subject_id: r for r in db.scalars(select(Registration).where(Registration.student_id == user_id))}
+    blocked = subject_clashes(subject_id, regs, _scheduled_classes_by_subject(db), slot_service.slot_intervals(db))
+    if blocked:
+        raise ConflictError(
+            f"{subject.code} cannot be added: it is at the same time as {blocked[0]['code']}, which you already "
+            f"picked. {blocked[0]['message']}",
+            code="SUBJECT_CLASH",
+        )
     used = committed_credits(db, user_id)
     if used + subject.total_credits > st.selected_credits:
         raise ValidationFailed(
@@ -214,17 +234,48 @@ def select_subject(db: Session, user_id: int, subject_id: int) -> Dict[str, Any]
         raise ConflictError("You have already registered for this subject.", code="ALREADY_REGISTERED")
     capacity_service.raise_no_faculty_alert_if_needed(db, subject)
     db.commit()
-    return {"subject_id": subject_id, "status": reg.status.value}
+    return _after_select(db, user_id, subject, reg)
+
+
+def _after_select(db: Session, user_id: int, subject: Subject, reg: Registration) -> Dict[str, Any]:
+    """A subject with a single faculty needs no further choice: send the request straight away."""
+    result: Dict[str, Any] = {
+        "subject_id": subject.id, "status": reg.status.value, "queued": False, "queue_position": None,
+        "message": f"{subject.code} added. Choose a faculty to finish.",
+    }
+    classes = list(db.scalars(select(ClassSection).where(ClassSection.subject_id == subject.id)))
+    if len(classes) != 1:
+        return result
+    cls = classes[0]
+    if not cls.is_scheduled:
+        result["message"] = f"{subject.code} added. Its timetable slot has not been set yet."
+        return result
+    if cls.is_open:
+        try:
+            out = submit_request(db, user_id, cls.id)
+        except ConflictError as e:
+            result["message"] = f"{subject.code} added, but the request could not be sent: {e.message}"
+            return result
+        if out.outcome == "QUEUED":
+            result.update(
+                status=RegistrationStatus.REQUESTED.value, queued=True, queue_position=out.queue_position,
+                message=f"{subject.code} added. It has only one faculty, so your request was sent to "
+                        f"{cls.faculty.user.name} automatically (queue position {out.queue_position}).",
+            )
+            return result
+    what = "closed" if cls.status == ClassStatus.CLOSED else "full"
+    result["message"] = (
+        f"{subject.code} added, but its only class is {what} right now. "
+        "You will be put in the queue automatically if a seat opens up."
+    )
+    return result
 
 
 def deselect_subject(db: Session, user_id: int, subject_id: int) -> None:
     require_registration_open(db)
-    st = get_student(db, user_id)
     reg = _registration(db, user_id, subject_id)
     if reg is None:
         raise NotFoundError("You have not selected this subject.")
-    if group_curriculum(db, st.group_code).get(subject_id):
-        raise ConflictError("This subject is mandatory for your group and cannot be dropped.", code="MANDATORY_SUBJECT")
     if reg.status == RegistrationStatus.ENROLLED:
         raise ConflictError(
             "You are already enrolled in a class for this subject; contact the administration to drop it.",
@@ -239,7 +290,15 @@ def deselect_subject(db: Session, user_id: int, subject_id: int) -> None:
             )
         )
         if pending:
-            _cancel(pending)
+            capacity_service.get_class(db, pending.class_id, lock=True)  # serialise with faculty actions
+            db.refresh(pending)
+            if pending.status == RequestStatus.PENDING:
+                _cancel(pending)
+    # Dropping a subject also clears its request history, so the Request Status page never shows leftovers
+    # (for example a "choose another faculty" button for a subject the student no longer holds).
+    for old in db.scalars(select(JoinRequest).where(JoinRequest.student_id == user_id, JoinRequest.subject_id == subject_id)):
+        if old.status != RequestStatus.ACCEPTED:
+            db.delete(old)
     db.delete(reg)
     db.commit()
 
@@ -273,6 +332,16 @@ def clashing_classes(
     return [c for c in db.scalars(q) if intervals_overlap(mine, slot_service.class_intervals(c, cache))]
 
 
+def clash_messages(cls: ClassSection, held: List[ClassSection], cache: slot_service.IntervalCache) -> List[str]:
+    """One plain sentence per held class, naming the clashing parts (theory/lab) and the time."""
+    out = []
+    for h in held:
+        pcs = slot_service.part_clashes(slot_service.class_parts(cls), slot_service.class_parts(h), cache)
+        if pcs:
+            out.append(pcs[0].sentence(cls.subject.code, h.subject.code).rstrip(".") + " (a class you already have).")
+    return out
+
+
 def _offering_view(db: Session, c: ClassSection, cache, student_id: Optional[int], queue_len: int = 0) -> Dict[str, Any]:
     clash = clashing_classes(db, student_id, c, cache) if student_id is not None else []
     return {
@@ -296,7 +365,7 @@ def _offering_view(db: Session, c: ClassSection, cache, student_id: Optional[int
         "status": c.status.value,
         "queue_length": queue_len,
         "available": c.is_open and c.is_scheduled and not clash,
-        "clash_with": [f"{x.subject.code} ({x.theory_slot.name})" for x in clash],
+        "clash_with": clash_messages(c, clash, cache),
     }
 
 
@@ -310,7 +379,10 @@ def class_options(
     if subject is None:
         raise NotFoundError("Subject not found")
     if _registration(db, user_id, subject_id) is None:
-        raise ValidationFailed("Select this subject first.", code="SUBJECT_NOT_SELECTED")
+        raise ValidationFailed(
+            "You are not registered for this subject (it may have been dropped). Select it again on the Subjects page.",
+            code="SUBJECT_NOT_SELECTED",
+        )
     classes = list(
         db.scalars(select(ClassSection).where(ClassSection.subject_id == subject_id).order_by(ClassSection.id))
     )
@@ -347,8 +419,7 @@ def class_options(
 def student_offerings(db: Session, user_id: int) -> List[Dict[str, Any]]:
     """Every scheduled offering with its slots and whether it clashes with what the student already holds.
     Grouping by slot (client side) shows which subjects are alternatives in the same slot."""
-    st = get_student(db, user_id)
-    cur = group_curriculum(db, st.group_code)
+    get_student(db, user_id)
     cache = slot_service.slot_intervals(db)
     regs = {r.subject_id: r for r in db.scalars(select(Registration).where(Registration.student_id == user_id))}
     out = []
@@ -357,7 +428,6 @@ def student_offerings(db: Session, user_id: int) -> List[Dict[str, Any]]:
     ):
         view = _offering_view(db, c, cache, user_id)
         r = regs.get(c.subject_id)
-        view["group_role"] = None if c.subject_id not in cur else ("MANDATORY" if cur[c.subject_id] else "GROUP")
         view["my_status"] = r.status.value if r else None
         view["mine"] = bool(r and r.class_id == c.id)
         out.append(view)
@@ -420,14 +490,13 @@ def submit_request(db: Session, user_id: int, class_id: int) -> SubmitOutcome:
             code="REQUEST_ALREADY_PENDING",
         )
     if not target.is_scheduled:
-        raise ConflictError("This offering has no slot yet, so it cannot be requested.", code="NOT_SCHEDULED")
-    clash = clashing_classes(db, user_id, target)
+        raise ConflictError("This class has no timetable slot yet, so it cannot be requested.", code="NOT_SCHEDULED")
+    cache = slot_service.slot_intervals(db)
+    clash = clashing_classes(db, user_id, target, cache)
     if clash:
-        c = clash[0]
         raise ConflictError(
-            f"Slot clash: {target.subject.code} ({target.theory_slot.name}"
-            f"{' / ' + target.lab_slot.name if target.lab_slot else ''}) overlaps {c.subject.code} "
-            f"({c.theory_slot.name}{' / ' + c.lab_slot.name if c.lab_slot else ''}) which you already hold.",
+            f"You cannot request {target.subject.code} with {target.faculty.user.name}. "
+            + clash_messages(target, clash, cache)[0],
             code="SLOT_CLASH",
         )
 
@@ -513,29 +582,110 @@ def cancel_request(db: Session, user_id: int, request_id: int) -> JoinRequest:
     return req
 
 
-def list_requests(db: Session, user_id: int) -> List[Dict[str, Any]]:
-    reqs = list(
+def sync_waiting_students(db: Session, subject_id: int) -> List[int]:
+    """Seats opened up (capacity raised or class reopened): put students who picked a single-faculty subject while
+    its class was full or closed into the queue automatically, oldest first. Returns the student ids queued.
+    The caller commits. Subjects with several faculty are left alone - the student still has a choice to make."""
+    if get_registration_settings(db).phase != RegistrationPhase.OPEN:
+        return []
+    classes = list(db.scalars(select(ClassSection).where(ClassSection.subject_id == subject_id)))
+    if len(classes) != 1 or not classes[0].is_scheduled:
+        return []
+    cls = capacity_service.get_class(db, classes[0].id, lock=True)
+    waiting = list(
         db.scalars(
-            select(JoinRequest)
-            .where(JoinRequest.student_id == user_id)
-            .order_by(JoinRequest.requested_at.desc(), JoinRequest.id.desc())
+            select(Registration)
+            .where(Registration.subject_id == subject_id, Registration.status == RegistrationStatus.SELECTED)
+            .order_by(Registration.created_at, Registration.id)
         )
     )
-    return [
-        {
-            "id": r.id,
-            "class_id": r.class_id,
-            "subject_id": r.subject_id,
-            "subject_code": r.subject.code,
-            "subject_name": r.subject.name,
-            "faculty_name": r.class_section.faculty.user.name,
-            "theory_slot": r.class_section.theory_slot.name if r.class_section.theory_slot else None,
-            "lab_slot": r.class_section.lab_slot.name if r.class_section.lab_slot else None,
-            "status": r.status.value,
-            "decision_reason": r.decision_reason,
-            "requested_at": r.requested_at,
-            "decided_at": r.decided_at,
-            "queue_position": queue_position(db, r),
-        }
-        for r in reqs
-    ]
+    cache = slot_service.slot_intervals(db)
+    queued: List[int] = []
+    for reg in waiting:
+        db.flush()
+        pending = db.scalar(
+            select(func.count(JoinRequest.id)).where(
+                JoinRequest.class_id == cls.id, JoinRequest.status == RequestStatus.PENDING
+            )
+        ) or 0
+        if not cls.is_open or pending >= cls.remaining:
+            break
+        if clashing_classes(db, reg.student_id, cls, cache):
+            continue
+        req = _enqueue(db, cls, reg.student_id)
+        reg.status = RegistrationStatus.REQUESTED
+        reg.class_id = cls.id
+        db.flush()
+        pos = queue_position(db, req)
+        notification_service.notify(
+            db, reg.student_id, NotificationType.CAPACITY_INCREASED,
+            f"A seat is available in {capacity_service.class_label(cls)}, so your request was sent automatically "
+            f"(queue position {pos}).",
+        )
+        notification_service.notify(
+            db, cls.faculty_id, NotificationType.NEW_JOIN_REQUEST,
+            f"{reg.student.user.name} ({reg.student.roll_number}) is waiting to join {cls.subject.code}.",
+        )
+        queued.append(reg.student_id)
+    return queued
+
+
+def list_requests(db: Session, user_id: int) -> List[Dict[str, Any]]:
+    """One row per subject the student currently holds: the latest request, or 'not requested yet'.
+
+    Requests for subjects the student has dropped are never shown, and old rejected/cancelled attempts are replaced
+    by the newest one, so every row describes something that is true right now.
+    """
+    regs = {r.subject_id: r for r in db.scalars(select(Registration).where(Registration.student_id == user_id))}
+    latest: Dict[int, JoinRequest] = {}
+    for r in db.scalars(
+        select(JoinRequest)
+        .where(JoinRequest.student_id == user_id)
+        .order_by(JoinRequest.requested_at.desc(), JoinRequest.id.desc())
+    ):
+        if r.subject_id in regs and r.subject_id not in latest:
+            latest[r.subject_id] = r
+    open_now = get_registration_settings(db).phase == RegistrationPhase.OPEN
+    counts = dict(db.execute(select(ClassSection.subject_id, func.count(ClassSection.id)).group_by(ClassSection.subject_id)).all())
+    rows: List[Dict[str, Any]] = []
+    for sid, reg in regs.items():
+        req = latest.get(sid)
+        if req is not None:
+            cs = req.class_section
+            rows.append(
+                {
+                    "id": req.id,
+                    "class_id": req.class_id,
+                    "subject_id": sid,
+                    "subject_code": req.subject.code,
+                    "subject_name": req.subject.name,
+                    "faculty_name": cs.faculty.user.name,
+                    "theory_slot": cs.theory_slot.name if cs.theory_slot else None,
+                    "lab_slot": cs.lab_slot.name if cs.lab_slot else None,
+                    "status": req.status.value,
+                    "decision_reason": req.decision_reason,
+                    "requested_at": req.requested_at,
+                    "decided_at": req.decided_at,
+                    "queue_position": queue_position(db, req),
+                    "can_choose_another": open_now and reg.status == RegistrationStatus.SELECTED
+                    and req.status in (RequestStatus.REJECTED, RequestStatus.CANCELLED),
+                    "note": None,
+                }
+            )
+        elif reg.status == RegistrationStatus.SELECTED:
+            sub = reg.subject
+            if counts.get(sid, 0) == 1:
+                note = "The only class for this subject is full or closed. You will be queued automatically if a seat opens up."
+            else:
+                note = "You have not sent a request yet. Choose a faculty to continue."
+            rows.append(
+                {
+                    "id": None, "class_id": None, "subject_id": sid, "subject_code": sub.code,
+                    "subject_name": sub.name, "faculty_name": None, "theory_slot": None, "lab_slot": None,
+                    "status": "NOT_REQUESTED", "decision_reason": None, "requested_at": reg.created_at,
+                    "decided_at": None, "queue_position": None,
+                    "can_choose_another": open_now and counts.get(sid, 0) > 1, "note": note,
+                }
+            )
+    rows.sort(key=lambda r: r["requested_at"].replace(tzinfo=None), reverse=True)
+    return rows

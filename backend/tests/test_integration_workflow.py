@@ -1,13 +1,12 @@
 """End-to-end workflow over the real HTTP API (no service shortcuts):
 
 Admin loads the slot chart + rooms, creates subjects and offerings (busy teachers are filtered out) ->
-Students pick credits/subjects (mandatory ones automatic) -> clashing requests are refused -> requests join the
+Students pick credits/subjects (a single-faculty subject is requested automatically) -> clashing picks are refused -> requests join the
 FIFO queue -> Faculty accept in order -> class fills -> others are told -> Admin sees unmet demand, raises
-capacity -> optimiser places the remaining offerings -> role-specific timetables.
+capacity -> the automatic scheduler places the remaining offerings -> role-specific timetables.
 """
 from sqlalchemy import select
 
-from app.models import CurriculumEntry, Subject
 from tests.factories import PASSWORD, make_admin
 
 
@@ -38,9 +37,6 @@ def test_full_slot_first_workflow(client, db):
     dsa = client.post("/api/admin/subjects", headers=A, json={"code": "BCSE202L", "name": "Data Structures", "credits": 3, "lab_credits": 1}).json()["id"]
     maths = client.post("/api/admin/subjects", headers=A, json={"code": "BMAT202L", "name": "Statistics", "credits": 3}).json()["id"]
     elec = client.post("/api/admin/subjects", headers=A, json={"code": "BHUM101L", "name": "Ethics", "credits": 2}).json()["id"]
-    for sid, mand in ((dsa, True), (maths, True), (elec, False)):
-        db.add(CurriculumEntry(group_code="CSE-S3", subject_id=sid, is_mandatory=mand))
-    db.commit()
 
     # ---- Offerings: a theory+lab pair for one faculty. The busy teacher then disappears from the drop-down.
     a1, l12 = slot_id(slots, "C1+TC1"), slot_id(slots, "L1+L2")
@@ -56,7 +52,7 @@ def test_full_slot_first_workflow(client, db):
     assert clash.status_code == 409 and clash.json()["code"] == "FACULTY_CLASH"
     # missing lab slot / wrong credit slot are refused
     assert client.post("/api/admin/offerings", headers=A, json={"subject_id": dsa, "faculty_id": fac["f2@c.edu"], "capacity": 2, "theory_slot_id": a1}).json()["code"] == "SLOT_INCOMPLETE"
-    # unplaced offerings for the optimiser
+    # unplaced offerings for the automatic scheduler
     for sub, f, cap in ((maths, "f2@c.edu", 5), (elec, "f1@c.edu", 5)):
         assert client.post("/api/admin/offerings", headers=A, json={"subject_id": sub, "faculty_id": fac[f], "capacity": cap}).status_code == 201
     rep = client.post("/api/admin/scheduling/auto-assign", headers=A).json()
@@ -66,25 +62,24 @@ def test_full_slot_first_workflow(client, db):
     chart = client.get("/api/admin/slot-chart", headers=A).json()
     assert any(s["name"] == "C1+TC1" and s["offerings"][0]["subject_code"] == "BCSE202L" for s in chart["slots"])
 
-    # ---- Students (group CSE-S3): mandatory subjects are registered automatically
+    # ---- Students: each picks a credit load, then subjects. DSA has a single faculty, so the request is sent automatically.
     studs = []
     for i in range(3):
         email = f"s{i}@c.edu"
         assert client.post("/api/admin/students", headers=A, json={
-            "name": f"Student {i}", "email": email, "password": PASSWORD, "roll_number": f"R{i}", "group_code": "CSE-S3"}).status_code == 201
+            "name": f"Student {i}", "email": email, "password": PASSWORD, "roll_number": f"R{i}"}).status_code == 201
         studs.append(login(client, email))
     ids = []
     for S in studs:
         prof = client.put("/api/student/credits", headers=S, json={"credits": 16}).json()
-        assert {m["code"] for m in prof["mandatory_subjects"]} == {"BCSE202L", "BMAT202L"}
-        mine = {s["code"]: s for s in client.get("/api/student/subjects", headers=S).json()}
-        assert mine["BCSE202L"]["registration_status"] == "SELECTED" and mine["BCSE202L"]["group_role"] == "MANDATORY"
-        assert client.delete(f"/api/student/subjects/{dsa}/select", headers=S).json()["code"] == "MANDATORY_SUBJECT"
-        r = client.post("/api/student/requests", headers=S, json={"class_id": dsa_class})
-        assert r.status_code == 201
-        ids.append(r.json()["request_id"])
+        assert "mandatory_subjects" not in prof and "group_code" not in prof  # no groups, no compulsory subjects
+        assert client.get("/api/student/requests", headers=S).json() == []  # nothing is registered for the student
+        sel = client.post(f"/api/student/subjects/{dsa}/select", headers=S)
+        assert sel.status_code == 201 and sel.json()["queued"] is True and "automatically" in sel.json()["message"]
+        ids.append(client.get("/api/student/requests", headers=S).json()[0]["id"])
     offerings = client.get("/api/student/offerings", headers=studs[0]).json()
     assert {o["subject_code"] for o in offerings} == {"BCSE202L", "BMAT202L", "BHUM101L"} and all(o["scheduled"] for o in offerings)
+    assert all("group_role" not in o for o in offerings)
     assert next(o for o in offerings if o["subject_code"] == "BCSE202L")["lab_slot"] == "L1+L2"
 
     # ---- Faculty accept in FIFO order; the class (2 seats) fills and closes
@@ -106,14 +101,18 @@ def test_full_slot_first_workflow(client, db):
     row = next(s for s in client.get("/api/admin/demand", headers=A).json()["subjects"] if s["code"] == "BCSE202L")
     assert row["unmet"] == 1 and row["enrolled"] == 2
     assert client.patch(f"/api/admin/classes/{dsa_class}/capacity", headers=A, json={"capacity": 3}).json()["status"] == "OPEN"
-    assert client.post("/api/student/requests", headers=studs[2], json={"class_id": dsa_class}).status_code == 201
+    # DSA has a single faculty, so the waiting student is put back in the queue automatically when the seat appears
+    queued = client.get("/api/student/requests", headers=studs[2]).json()
+    assert queued[0]["subject_code"] == "BCSE202L" and queued[0]["status"] == "PENDING" and queued[0]["queue_position"] == 1
     assert client.post(f"/api/faculty/classes/{dsa_class}/accept-next", headers=F1).status_code == 200
 
     # ---- A student can never take an overlapping offering
     maths_class = next(c["id"] for c in client.get("/api/admin/classes", headers=A).json() if c["subject_code"] == "BMAT202L")
     elec_class = next(c["id"] for c in client.get("/api/admin/classes", headers=A).json() if c["subject_code"] == "BHUM101L")
-    assert client.post("/api/student/requests", headers=studs[0], json={"class_id": maths_class}).status_code == 201
-    assert client.post(f"/api/student/subjects/{elec}/select", headers=studs[0]).status_code in (201, 422)  # credit room permitting
+    assert client.post(f"/api/student/subjects/{maths}/select", headers=studs[0]).json()["queued"] is True
+    # ethics might clash with the placed slots (auto_assign could have placed it same time as maths), so expect clash/credit codes
+    resp = client.post(f"/api/student/subjects/{elec}/select", headers=studs[0])
+    assert resp.status_code in (201, 409, 422), f"expected code in 201/409/422, got {resp.status_code}: {resp.text}"
     # slots of workflow offerings cannot be edited while students are involved
     locked = client.patch(f"/api/admin/offerings/{dsa_class}/slots", headers=A, json={"theory_slot_id": slot_id(slots, "B1+TB1"), "lab_slot_id": l12})
     assert locked.status_code == 409 and locked.json()["code"] == "SLOT_LOCKED"

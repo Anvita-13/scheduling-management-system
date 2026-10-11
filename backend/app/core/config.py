@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     # a JSON list such as ["http://a","http://b"] is accepted too.
     CORS_ORIGINS: Annotated[List[str], NoDecode] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
+    # True on a shared public demo: nobody can change the sample accounts' names, e-mails or passwords.
+    LOCK_ACCOUNT_CHANGES: bool = False
+
     DEFAULT_CLASS_CAPACITY: int = 30
     DEFAULT_MIN_CREDITS: int = 12
     DEFAULT_MAX_CREDITS: int = 24
