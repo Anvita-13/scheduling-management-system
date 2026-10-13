@@ -4,29 +4,25 @@ import { studentApi } from '../../api'
 import { Alert, Async, Badge, Card, EmptyState, Input, PageHeader } from '../../components/ui'
 import { useApi } from '../../hooks/useApi'
 
-const ROLE_BADGE = { MANDATORY: ['ENROLLED', 'Mandatory'], GROUP: ['SELECTED', 'Your group'] }
-
 /** All offerings grouped by theory slot: subjects in the same slot are alternatives - you can take only one. */
 export default function SlotView() {
   const state = useApi(() => studentApi.offerings())
-  const [groupOnly, setGroupOnly] = useState(true)
   const [hideClash, setHideClash] = useState(false)
   const [q, setQ] = useState('')
 
   const grouped = useMemo(() => {
     const rows = (state.data || []).filter((o) =>
-      (!groupOnly || o.group_role) && (!hideClash || o.clash_with.length === 0) &&
+      (!hideClash || o.clash_with.length === 0) &&
       `${o.subject_code} ${o.subject_name} ${o.faculty_name}`.toLowerCase().includes(q.toLowerCase()))
     const by = {}
     rows.forEach((o) => { (by[o.theory_slot] ||= { slot: o.theory_slot, times: o.theory_times, items: [] }).items.push(o) })
     return Object.values(by).sort((a, b) => a.slot.localeCompare(b.slot))
-  }, [state.data, groupOnly, hideClash, q])
+  }, [state.data, hideClash, q])
 
   return (
     <>
       <PageHeader title="Slot view" subtitle="Every offering by its theory slot. Subjects that share a slot are alternatives: you can hold only one of them. Offerings that overlap in time with something you already hold are marked and cannot be requested." />
       <div className="mb-4 flex flex-wrap items-center gap-4 text-sm">
-        <label className="flex items-center gap-2"><input type="checkbox" className="accent-brand-600" checked={groupOnly} onChange={(e) => setGroupOnly(e.target.checked)} /> Only my group's subjects</label>
         <label className="flex items-center gap-2"><input type="checkbox" className="accent-brand-600" checked={hideClash} onChange={(e) => setHideClash(e.target.checked)} /> Hide options that clash with mine</label>
         <div className="w-64"><Input placeholder="Search subject or faculty…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search" /></div>
       </div>
@@ -42,7 +38,6 @@ export default function SlotView() {
                       <div className="flex flex-wrap items-center justify-between gap-1">
                         <b>{o.subject_code}</b>
                         <span className="flex gap-1">
-                          {o.group_role && <Badge status={ROLE_BADGE[o.group_role][0]}>{ROLE_BADGE[o.group_role][1]}</Badge>}
                           {o.mine && <Badge status="ENROLLED">{o.my_status === 'ENROLLED' ? 'Enrolled' : 'Requested'}</Badge>}
                         </span>
                       </div>

@@ -7,7 +7,7 @@ import { useAction, useApi } from '../../hooks/useApi'
 function CreateUser({ kind, onCreated }) {
   const toast = useToast()
   const { busy, run } = useAction(toast)
-  const empty = { name: '', email: '', password: '', code: '', department: '', group: '' }
+  const empty = { name: '', email: '', password: '', code: '', department: '' }
   const [f, setF] = useState(empty)
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
   const isFaculty = kind === 'faculty'
@@ -18,7 +18,7 @@ function CreateUser({ kind, onCreated }) {
         e.preventDefault()
         const body = isFaculty
           ? { name: f.name, email: f.email, password: f.password, employee_code: f.code, department: f.department }
-          : { name: f.name, email: f.email, password: f.password, roll_number: f.code, group_code: f.group || null }
+          : { name: f.name, email: f.email, password: f.password, roll_number: f.code }
         const api = isFaculty ? adminApi.createFaculty : adminApi.createStudent
         const res = await run(() => api(body), { success: 'Account created', onDone: onCreated })
         if (res) setF(empty)
@@ -28,7 +28,6 @@ function CreateUser({ kind, onCreated }) {
         <Field label="Initial password" hint="At least 8 characters"><Input required type="password" minLength={8} value={f.password} onChange={set('password')} /></Field>
         <Field label={isFaculty ? 'Employee code' : 'Roll number'}><Input required value={f.code} onChange={set('code')} /></Field>
         {isFaculty && <Field label="Department"><Input value={f.department} onChange={set('department')} /></Field>}
-        {!isFaculty && <Field label="Group (programme-semester)" hint="e.g. CSE-S3; decides mandatory subjects"><Input value={f.group} onChange={set('group')} /></Field>}
         <div className="flex items-end"><Button type="submit" busy={busy} className="w-full">Create account</Button></div>
       </form>
     </Card>
@@ -57,7 +56,7 @@ export default function People() {
               ]} />
             ) : (
               <Table rows={rows} rowKey={(r) => r.user_id} columns={[
-                { key: 'name', header: 'Name' }, { key: 'email', header: 'Email' }, { key: 'roll_number', header: 'Roll no.' }, { key: 'group_code', header: 'Group', render: (r) => r.group_code || '—' },
+                { key: 'name', header: 'Name' }, { key: 'email', header: 'Email' }, { key: 'roll_number', header: 'Roll no.' },
                 { key: 'selected_credits', header: 'Credit target', render: (r) => r.selected_credits ?? '—' }, { key: 'max_credits', header: 'Max credits' },
               ]} />
             )}

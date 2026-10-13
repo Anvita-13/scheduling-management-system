@@ -4,6 +4,8 @@ import { del, get, patch, post, put } from './client'
 export const authApi = {
   login: (email, password) => post('/auth/login', { email, password }),
   me: () => get('/auth/me'),
+  updateProfile: (body) => patch('/auth/me', body),
+  changePassword: (current, next) => post('/auth/change-password', { current_password: current, new_password: next }),
 }
 
 export const notificationApi = {
@@ -37,6 +39,7 @@ export const facultyApi = {
   acceptNext: (classId, requestId) => post(`/faculty/classes/${classId}/accept-next`, {}, { request_id: requestId }),
   rejectNext: (classId, requestId) => post(`/faculty/classes/${classId}/reject-next`, {}, { request_id: requestId }),
   closeClass: (classId) => post(`/faculty/classes/${classId}/close`),
+  requestReopen: (classId) => post(`/faculty/classes/${classId}/request-reopen`),
 }
 
 export const adminApi = {
@@ -45,7 +48,6 @@ export const adminApi = {
   createFaculty: (b) => post('/admin/faculty', b),
   students: () => get('/admin/students'),
   createStudent: (b) => post('/admin/students', b),
-  curriculum: () => get('/admin/curriculum'),
   // subjects and offerings (a faculty member + their slots)
   subjects: () => get('/admin/subjects'),
   createSubject: (b) => post('/admin/subjects', b),
@@ -61,6 +63,7 @@ export const adminApi = {
   setCapacity: (id, capacity) => patch(`/admin/classes/${id}/capacity`, { capacity }),
   closeClass: (id) => post(`/admin/classes/${id}/close`),
   reopenClass: (id) => post(`/admin/classes/${id}/reopen`),
+  declineReopen: (id) => post(`/admin/classes/${id}/decline-reopen`),
   registration: () => get('/admin/registration'),
   updateRegistration: (b) => put('/admin/registration', b),
   demand: () => get('/admin/demand'),
@@ -74,11 +77,5 @@ export const adminApi = {
   autoAssign: () => post('/admin/scheduling/auto-assign'),
   assignRooms: () => post('/admin/scheduling/assign-rooms'),
   clearPlacements: () => post('/admin/scheduling/clear'),
-  // algorithm insights (read-only)
-  insightFifo: (classId) => get(`/admin/insights/fifo/${classId}`),
-  insightGreedy: (params) => get('/admin/insights/greedy', params),
-  insightColoring: () => get('/admin/insights/graph-coloring'),
-  insightMaxFlow: () => get('/admin/insights/max-flow'),
-  runMaxFlow: () => post('/admin/insights/max-flow/run'),
   algorithmRuns: () => get('/admin/algorithm-runs'),
 }

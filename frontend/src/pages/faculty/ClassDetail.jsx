@@ -53,7 +53,18 @@ export default function ClassDetail() {
                   <div><p className="text-xs uppercase text-slate-500">Seats remaining</p><p className="text-2xl font-bold">{c.remaining}</p></div>
                 </div>
                 {c.status === 'FULL' && <div className="mt-4"><Alert kind="warning">All seats are filled, so the class closed automatically. New requests are rejected and students are told the class is full.</Alert></div>}
-                {c.status === 'CLOSED' && <div className="mt-4"><Alert kind="info">This class was closed. Ask the administration to reopen it if needed.</Alert></div>}
+                {c.status === 'CLOSED' && (
+                  <div className="mt-4">
+                    <Alert kind="info" title="This class is closed">
+                      {c.reopen_requested
+                        ? 'You have asked the administration to reopen it. You will be notified of their decision.'
+                        : 'If more students need this class, you can ask the administration to reopen it.'}
+                    </Alert>
+                    {!c.reopen_requested && (
+                      <div className="mt-3"><Button busy={busy} onClick={() => run(() => facultyApi.requestReopen(c.id), { success: 'Request sent to the administration', onDone: state.reload })}>Request reopening</Button></div>
+                    )}
+                  </div>
+                )}
               </Card>
 
               <Card title={`Pending requests (${c.queue.length}) — first come, first served`} padded={false}>

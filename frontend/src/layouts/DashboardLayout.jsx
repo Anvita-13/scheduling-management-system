@@ -12,14 +12,15 @@ const NAV = {
     ['/admin/demand', 'Demand & Waitlist'],
     ['/admin/registration', 'Registration'],
     ['/admin/people', 'People'],
-    ['/admin/insights', 'Algorithm Insights'],
     ['/admin/notifications', 'Notifications'],
+    ['/admin/settings', 'Settings'],
   ],
   FACULTY: [
     ['/faculty', 'Dashboard', true],
     ['/faculty/classes', 'My Classes'],
     ['/faculty/timetable', 'Timetable'],
     ['/faculty/notifications', 'Notifications'],
+    ['/faculty/settings', 'Settings'],
   ],
   STUDENT: [
     ['/student', 'Dashboard', true],
@@ -29,6 +30,7 @@ const NAV = {
     ['/student/requests', 'Request Status'],
     ['/student/timetable', 'Timetable'],
     ['/student/notifications', 'Notifications'],
+    ['/student/settings', 'Settings'],
   ],
 }
 

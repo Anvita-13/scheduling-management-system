@@ -12,7 +12,7 @@ import AdminSlotChart from './pages/admin/SlotChart'
 import AdminScheduling from './pages/admin/Scheduling'
 import AdminRegistration from './pages/admin/Registration'
 import AdminDemand from './pages/admin/Demand'
-import AdminInsights from './pages/admin/Insights'
+import SettingsPage from './pages/shared/Settings'
 import AdminPeople from './pages/admin/People'
 
 import FacultyDashboard from './pages/faculty/Dashboard'
@@ -45,9 +45,9 @@ export default function App() {
           <Route path="scheduling" element={<AdminScheduling />} />
           <Route path="registration" element={<AdminRegistration />} />
           <Route path="demand" element={<AdminDemand />} />
-          <Route path="insights" element={<AdminInsights />} />
           <Route path="people" element={<AdminPeople />} />
           <Route path="notifications" element={<NotificationsPage />} />
+          <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Route>
 
@@ -58,6 +58,7 @@ export default function App() {
           <Route path="classes/:classId" element={<FacultyClassDetail />} />
           <Route path="timetable" element={<TimetablePage title="My teaching timetable" />} />
           <Route path="notifications" element={<NotificationsPage />} />
+          <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Route>
 
@@ -71,6 +72,7 @@ export default function App() {
           <Route path="requests" element={<StudentRequests />} />
           <Route path="timetable" element={<TimetablePage title="My timetable" />} />
           <Route path="notifications" element={<NotificationsPage />} />
+          <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Route>
 

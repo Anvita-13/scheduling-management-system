@@ -140,7 +140,6 @@ function SubjectCard({ subject, slots, onChanged }) {
     <Card
       title={<span>{subject.code} — {subject.name} <span className="ml-2 text-sm font-normal text-slate-500">{subject.credits}{subject.has_lab ? `+${subject.lab_credits} (theory+lab)` : ' (theory only)'} credits</span></span>}
       actions={<>
-        {subject.groups.map((g) => <Badge key={g} status={g.includes('mandatory') ? 'ENROLLED' : 'SELECTED'}>{g}</Badge>)}
         <Button size="sm" variant="secondary" busy={busy} disabled={subject.offerings.length > 0}
           onClick={() => window.confirm(`Delete ${subject.code}?`) && run(() => adminApi.deleteSubject(subject.id), { success: 'Subject deleted', onDone: onChanged })}>Delete</Button>
       </>}

@@ -23,11 +23,6 @@ export default function Credits() {
           return (
             <div className="max-w-xl space-y-4">
               {!p.registration_open && <Alert kind="warning">Registration is closed, so credits can no longer be changed.</Alert>}
-              {p.mandatory_subjects.length > 0 && (
-                <Alert kind="info" title={`Group ${p.group_code}: mandatory subjects`}>
-                  {p.mandatory_subjects.map((m) => `${m.code} (${m.credits} cr)`).join(', ')} are added automatically when you save, and count toward your load.
-                </Alert>
-              )}
               <Card title="Credit load">
                 <form
                   className="space-y-4"

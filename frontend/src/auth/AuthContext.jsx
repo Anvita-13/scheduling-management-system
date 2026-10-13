@@ -31,7 +31,8 @@ export function AuthProvider({ children }) {
     return res.user
   }, [])
 
-  const value = useMemo(() => ({ user, loading, login, logout }), [user, loading, login, logout])
+  const refresh = useCallback((u) => setUser(u), [])
+  const value = useMemo(() => ({ user, loading, login, logout, refresh }), [user, loading, login, logout, refresh])
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 

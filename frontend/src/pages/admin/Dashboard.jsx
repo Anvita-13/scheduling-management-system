@@ -1,10 +1,13 @@
 import { Link } from 'react-router-dom'
 import { adminApi, notificationApi } from '../../api'
-import { Alert, Async, Button, Card, PageHeader, StatCard } from '../../components/ui'
-import { useApi } from '../../hooks/useApi'
+import { Alert, Async, Button, Card, PageHeader, StatCard, Table } from '../../components/ui'
+import { useToast } from '../../components/Toast'
+import { useAction, useApi } from '../../hooks/useApi'
 import { NOTIFICATION_STYLES, formatDateTime } from '../../utils/format'
 
 export default function AdminDashboard() {
+  const toast = useToast()
+  const { busy, run } = useAction(toast)
   const state = useApi(async () => {
     const [dash, alerts] = await Promise.all([adminApi.dashboard(), notificationApi.list(true)])
     return { dash, alerts }
@@ -24,6 +27,21 @@ export default function AdminDashboard() {
               <Alert kind="success" title="Schedule is clash-free">All {d.offerings} offerings are placed with rooms. <Link to="/admin/slot-chart" className="font-semibold underline">View the slot chart</Link></Alert>
             )}
             {d.registration.phase === 'CLOSED' && <Alert kind="warning" title="Registration is closed">Review <Link className="font-semibold underline" to="/admin/demand">unmet demand</Link> and add seats where needed.</Alert>}
+            {d.reopen_requests.length > 0 && (
+              <Card title={`Requests to reopen a class (${d.reopen_requests.length})`} padded={false}>
+                <Table rows={d.reopen_requests} rowKey={(r) => r.class_id} columns={[
+                  { key: 'subject_code', header: 'Subject', render: (r) => `${r.subject_code} ${r.subject_name}` },
+                  { key: 'faculty_name', header: 'Faculty' },
+                  { key: 'seats', header: 'Seats filled', render: (r) => `${r.enrolled_count}/${r.capacity}` },
+                  { key: 'when', header: 'Asked', render: (r) => formatDateTime(r.requested_at) },
+                  { key: 'act', header: '', className: 'text-right whitespace-nowrap', render: (r) => (
+                    <div className="flex justify-end gap-2">
+                      <Button size="sm" busy={busy} disabled={r.remaining === 0} onClick={() => run(() => adminApi.reopenClass(r.class_id), { success: 'Class reopened', onDone: state.reload })}>Reopen</Button>
+                      <Button size="sm" variant="secondary" busy={busy} onClick={() => run(() => adminApi.declineReopen(r.class_id), { success: 'Request declined', onDone: state.reload })}>Decline</Button>
+                    </div>) },
+                ]} />
+              </Card>
+            )}
             <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
               <StatCard label="Offerings" value={d.offerings} hint={`${d.subjects} subjects · ${d.faculty} faculty`} />
               <StatCard label="Without a slot" value={d.unscheduled} tone={d.unscheduled ? 'warn' : 'good'} />
